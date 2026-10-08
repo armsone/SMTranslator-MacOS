@@ -311,7 +311,9 @@ enum ImageTextRecognizer {
         }
         let levels = (0..<(grid * grid)).map { luminance($0 % grid, $0 / grid) }
         let ordered = levels.sorted()
-        let low = ordered[ordered.count / 10], high = ordered[ordered.count * 9 / 10]
+        // 얇은 글씨는 잉크가 상자의 10%보다 적을 수 있다. 10~90%만 보면 양끝이
+        // 모두 배경색이 되어 정상 글자를 빈 상자로 버리므로, 양끝 2%만 제외한다.
+        let low = ordered[ordered.count / 50], high = ordered[ordered.count * 49 / 50]
         guard high - low >= 0.15 else { return nil } // 저대비·빈 상자는 분류하지 않는다
         let threshold = (low + high) / 2
         let border = (0..<grid).flatMap { i in [luminance(i, 0), luminance(i, grid - 1),

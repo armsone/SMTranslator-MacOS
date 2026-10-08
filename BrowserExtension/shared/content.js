@@ -538,11 +538,9 @@
     div.style.pointerEvents = "none";
     text.style.lineHeight = "1.15";
     text.style.transform = "";
-    const image = div.parentElement;
-    const extraWidth = vertical ? div.offsetLeft : image.clientWidth - div.offsetLeft - div.offsetWidth;
-    const extraHeight = image.clientHeight - div.offsetTop - div.offsetHeight;
-    const width = div.clientWidth + Math.min(minFont * 1.5, Math.max(0, extraWidth));
-    const height = div.clientHeight + Math.min(minFont * 0.8, Math.max(0, extraHeight));
+    // 분할된 영역의 소수점 치수를 정수로 버리면 좁은 칸이 0px로 측정될 수 있다.
+    const width = div.getBoundingClientRect().width;
+    const height = div.getBoundingClientRect().height;
     if (vertical) {
       text.style.height = `${height}px`;
       text.style.width = "auto";
@@ -712,6 +710,37 @@
       idxs.forEach((i) => { geoms[i].estimate = median; });
     });
 
+    // 여유 공간도 이웃과 함께 배정한다. 각 칸이 독립적으로 넓어지면 왼쪽 세로쓰기 칸을 덮는다.
+    const bounds = geoms.map((g) => ({
+      left: Math.max(0, g.left - (g.vertical ? MIN_FONT * 1.5 : 0)),
+      right: Math.min(clip.w, g.left + g.w + (g.vertical ? 0 : MIN_FONT * 1.5)),
+      top: g.top,
+      bottom: Math.min(clip.h, g.bottom + MIN_FONT * 0.8)
+    }));
+    for (let i = 0; i < bounds.length; i += 1) {
+      for (let j = i + 1; j < bounds.length; j += 1) {
+        const a = bounds[i], b = bounds[j];
+        const left = Math.max(a.left, b.left), right = Math.min(a.right, b.right);
+        const top = Math.max(a.top, b.top), bottom = Math.min(a.bottom, b.bottom);
+        if (left >= right || top >= bottom) continue;
+        const ga = geoms[i], gb = geoms[j];
+        const ay = ga.top + ga.h / 2, by = gb.top + gb.h / 2;
+        if (Math.abs(ga.cx - gb.cx) >= Math.abs(ay - by)) {
+          const center = (ga.cx + gb.cx) / 2;
+          const split = center > left && center < right ? center : (left + right) / 2;
+          const [before, after] = ga.cx <= gb.cx ? [a, b] : [b, a];
+          before.right = split;
+          after.left = split;
+        } else {
+          const center = (ay + by) / 2;
+          const split = center > top && center < bottom ? center : (top + bottom) / 2;
+          const [before, after] = ay <= by ? [a, b] : [b, a];
+          before.bottom = split;
+          after.top = split;
+        }
+      }
+    }
+
     // 번역 글자는 투명 배경으로 원문 위치에서 시작하며, 글자 영역을 조금 벗어날 수 있다.
     const divs = new Array(items.length);
     const texts = new Array(items.length);
@@ -720,10 +749,11 @@
       const item = items[i];
       const div = document.createElement("div");
       div.className = "t";
-      div.style.left = `${item.x * 100}%`;
-      div.style.top = `${item.y * 100}%`;
-      div.style.width = `${item.w * 100}%`;
-      div.style.height = `${item.h * 100}%`;
+      const area = bounds[i];
+      div.style.left = `${area.left}px`;
+      div.style.top = `${area.top}px`;
+      div.style.width = `${Math.max(0, area.right - area.left)}px`;
+      div.style.height = `${Math.max(0, area.bottom - area.top)}px`;
       div.style.color = item.fg;
 
       const { vertical, estimate } = geoms[i];
