@@ -211,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             icon.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
             resized.unlockFocus()
             header.image = resized
+            if #available(macOS 27.0, *) {
+                header.preferredImageVisibility = .visible
+            }
         }
         return header
     }
@@ -316,6 +319,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.isEnabled = true
         if let symbol {
             item.image = symbolImage(symbol)
+            if #available(macOS 27.0, *) {
+                item.preferredImageVisibility = .visible
+            }
         }
         return item
     }
