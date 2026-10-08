@@ -13,6 +13,24 @@ let notice = ""; // 번역 버튼 결과 안내(새로 고침해도 다른 오�
 let pendingEngine = null; // 동의를 기다리는 웹 번역 엔진
 const ENGINE_NAMES = { apple: "Mac 기본 번역", deepl: "DeepL", google: "Google 번역", papago: "Papago" };
 
+// 0.5.0 이전 배경 작업자는 settings.engine 자체가 없다(필드가 문자열이 아님). 그 경우 새 번역 엔진
+// 기능(engineConsents 등)을 쓸 수 없으니, 그 사실을 솔직히 알리고 외부 전송을 임의로 주장하지 않는다.
+function isLegacyBackground(state) {
+  return typeof state?.settings?.engine !== "string";
+}
+
+// 알려진 엔진 키만 유효하게 취급한다(Object.hasOwn으로 프로토타입 체인 값을 배제해
+// "__proto__" 같은 값이 유효한 엔진으로 오판되지 않도록 한다).
+function isKnownEngine(engine) {
+  return typeof engine === "string" && Object.hasOwn(ENGINE_NAMES, engine);
+}
+
+// 알 수 없거나 비어 있는 엔진 값은 절대 그대로 화면에 보여주지 않고(undefined 노출 방지),
+// 실제로 외부로 보냈다고 거짓 주장하지 않도록 안전하게 Mac 기본 번역으로만 표시한다.
+function safeEngineName(engine) {
+  return isKnownEngine(engine) ? ENGINE_NAMES[engine] : ENGINE_NAMES.apple;
+}
+
 function engineConsentText(engine) {
   const name = ENGINE_NAMES[engine] || engine;
   return `${name}을(를) 고르면, 번역할 때 이 페이지에서 찾은 글자(이미지 속 글자는 이 Mac에서 인식한 텍스트만)를 SMT 앱이 ` +
@@ -48,45 +66,48 @@ function render(state) {
   $("consent").hidden = state.settings.consent;
   $("main").hidden = !state.settings.consent;
   $("target").value = state.settings.target;
+  const legacy = isLegacyBackground(state);
+  // 알려진 엔진 값이 아니거나(미판별) 레거시 배경이면 Mac 기본 번역으로만 표시한다. 저장된 설정은 바꾸지 않는다.
+  const displayEngine = !legacy && isKnownEngine(state.settings.engine) ? state.settings.engine : "apple";
   // 웹 번역 엔진은 Chrome·Whale에서, 그 엔진을 지원하는 SMT와 연결됐을 때만 고를 수 있다.
   const available = state.engine.ok && Array.isArray(state.engine.externalEngines) ? state.engine.externalEngines : [];
   for (const option of $("engineSelect").options) {
     if (option.value === "apple") continue;
-    option.disabled = state.safari || !available.includes(option.value);
+    // 레거시 배경 작업자는 engineConsents/setEngine을 모르므로 새로고침 전까지 외부 엔진을 고를 수 없게 막는다.
+    option.disabled = legacy || state.safari || !available.includes(option.value);
   }
-  if (!pendingEngine) $("engineSelect").value = state.settings.engine;
+  if (!pendingEngine) $("engineSelect").value = displayEngine;
   $("engineConsent").hidden = !pendingEngine;
-  if (state.safari) {
-    $("engineNote").textContent = "Safari에서는 Mac 기본 번역만 쓸 수 있습니다(확장 앱이 네트워크에 접속하지 않음).";
-  } else if (state.settings.engine !== "apple") {
-    $("engineNote").textContent = `${ENGINE_NAMES[state.settings.engine]} 웹으로 외부 전송 중입니다.`;
+  if (legacy) {
+    $("engineNote").textContent = "확장 관리에서 새로고침해 주세요.";
+  } else if (state.safari) {
+    $("engineNote").textContent = "Safari · Mac 기본 번역";
+  } else if (displayEngine !== "apple") {
+    $("engineNote").textContent = `${safeEngineName(displayEngine)} 외부 전송 · `;
   } else {
     $("engineNote").textContent = "";
   }
   $("engineNote").hidden = !$("engineNote").textContent;
-  if (!state.safari && state.settings.engine !== "apple") {
+  if (!legacy && !state.safari && displayEngine !== "apple") {
     const revoke = document.createElement("button");
     revoke.className = "linkButton";
-    revoke.textContent = " 동의 철회";
+    revoke.textContent = "동의 철회";
     revoke.addEventListener("click", async () => {
-      await call({ cmd: "revokeEngine", engine: state.settings.engine }).catch((e) => showError(e.message));
+      await call({ cmd: "revokeEngine", engine: displayEngine }).catch((e) => showError(e.message));
       refresh();
     });
     $("engineNote").appendChild(revoke);
   }
-  $("footer").textContent = state.settings.engine === "apple"
-    ? "Mac 기본 번역(기기 내) · SMT 앱의 번역 방식 설정과 별개"
-    : `${ENGINE_NAMES[state.settings.engine]} 웹 · 외부 전송 · SMT 앱의 번역 방식 설정과 별개`;
   $("images").checked = state.settings.images;
   $("translate").disabled = tabId === null;
   // 이 탭이 아직 번역되지 않았어도 전역 자동 번역이 켜져 있으면 전역으로 끌 수 있어야 한다.
   $("original").disabled = !state.page && !state.settings.automaticEnabled;
   if (state.settings.automaticEnabled) {
-    $("autoStatus").textContent = "자동 번역 켜짐 · 열린 탭과 이후 여는 http/https 페이지에 적용 · 원문 보기로 전체 끄기";
+    $("autoStatus").textContent = "자동 번역 켜짐";
   } else if (!IS_SAFARI && !state.grant) {
-    $("autoStatus").textContent = "자동 번역 꺼짐 · 번역을 누르면 모든 웹사이트 접근 권한을 묻습니다";
+    $("autoStatus").textContent = "자동 번역 꺼짐 · 접근 허용 필요";
   } else {
-    $("autoStatus").textContent = "자동 번역 꺼짐 · 번역을 누르면 시작";
+    $("autoStatus").textContent = "자동 번역 꺼짐";
   }
 
   let status = "";
@@ -162,6 +183,11 @@ $("target").addEventListener("change", async (event) => {
 $("engineSelect").addEventListener("change", async (event) => {
   const engine = event.target.value;
   showError("");
+  if (isLegacyBackground(current)) {
+    // 레거시 배경 작업자는 setEngine/engineConsents를 모른다. 불필요한 명령을 보내지 않고 되돌린다.
+    event.target.value = "apple";
+    return;
+  }
   if (engine !== "apple" && !(current?.settings.engineConsents || []).includes(engine)) {
     // 전송 안내를 보여 주고 동의를 받을 때까지 이전 엔진을 유지한다.
     pendingEngine = engine;
@@ -184,7 +210,10 @@ $("engineAgree").addEventListener("click", async () => {
 $("engineCancel").addEventListener("click", () => {
   pendingEngine = null;
   $("engineConsent").hidden = true;
-  if (current) $("engineSelect").value = current.settings.engine;
+  if (current) {
+    const displayEngine = !isLegacyBackground(current) && isKnownEngine(current.settings.engine) ? current.settings.engine : "apple";
+    $("engineSelect").value = displayEngine;
+  }
 });
 
 $("images").addEventListener("change", async (event) => {

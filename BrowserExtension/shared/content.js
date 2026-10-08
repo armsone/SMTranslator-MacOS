@@ -328,7 +328,7 @@
       // 같은 이미지·같은 언어로 이미 그렸고, 그때 잘라낸 영역이 지금 보이는 영역을 덮으면 다시 하지 않는다.
       if (existing && existing.key === imageKey(img) && existing.offX <= offX + 1 && existing.offY <= offY + 1 &&
           existing.offX + existing.w >= offX + w - 1 && existing.offY + existing.h >= offY + h - 1) continue;
-      list.push({ img, rect, clip: { x: clip.x, y: clip.y, w, h }, area: w * h });
+      list.push({ img, key: imageKey(img), rect, clip: { x: clip.x, y: clip.y, w, h }, area: w * h });
     }
     return list.sort((a, b) => b.area - a.area).slice(0, MAX_IMAGES);
   }
@@ -406,6 +406,9 @@
         const index = Number(String(image.k).slice(1));
         const candidate = candidates[index];
         if (!candidate || `i${index}` !== image.k || !candidate.img.isConnected) continue;
+        // 캡처를 보낸 뒤 OCR 응답이 오기까지 사이에 이 이미지의 currentSrc가 바뀌었으면(같은 엘리먼트를 재사용하는
+        // 리더에서 다음/이전 이미지로 넘어간 경우) 방금 받은 글자는 이제는 없는 예전 이미지 것이므로 버린다.
+        if (candidate.key !== imageKey(candidate.img)) continue;
         renderImage(candidate, image.items, image.langs);
       }
     } finally {
@@ -495,9 +498,31 @@
 
   // MARK: 변경 감시(자동 번역일 때만) — 자기 변경은 걸러 무한 반복을 막는다.
 
+  // img/picture-source의 src·srcset이 바뀌면 그 이미지는 이제 다른 그림이므로(같은 엘리먼트를 재사용하는
+  // 리더 등) 남은 덮개는 틀린 그림 위에 뜬 것이다. 지우고 진행 중 캡처·OCR은 scrollGen을 올려 무효화한다.
+  function invalidateImage(img) {
+    const record = imageRecords.get(img);
+    if (record) {
+      record.box.remove();
+      imageRecords.delete(img);
+    }
+    state.scrollGen += 1;
+    if (ocrInFlight) send({ cmd: "cancel", kind: "ocr" }).catch(() => {});
+  }
+
   const observer = new MutationObserver((mutations) => {
     if (!state.auto || state.view !== "translated") return;
     for (const mutation of mutations) {
+      if (mutation.type === "attributes") {
+        const target = mutation.target;
+        if (target.tagName === "IMG") invalidateImage(target);
+        else if (target.tagName === "SOURCE") {
+          const picture = target.parentElement;
+          const img = picture && picture.tagName === "PICTURE" ? picture.querySelector("img") : null;
+          if (img) invalidateImage(img);
+        }
+        return onPageChanged();
+      }
       if (mutation.type === "characterData") {
         const record = records.get(mutation.target);
         if (record && (mutation.target.nodeValue === record.translated || mutation.target.nodeValue === record.original)) continue;
@@ -514,12 +539,23 @@
     schedule();
   }
 
+  // 로딩 중이라 이번 통과에서 건너뛴 이미지(imageCandidates의 !img.complete)는 로드가 끝나야 OCR할 수 있으므로,
+  // 캡처링으로 하위 img의 load를 받아 그때 한 번 더 통과를 건다(자동 번역 중일 때만).
+  function onImageLoad(event) {
+    if (event.target instanceof HTMLImageElement && state.auto && state.view === "translated") schedule();
+  }
+
   function setObserving(on) {
     if (on && !observing && document.body) {
-      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      observer.observe(document.body, {
+        childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ["src", "srcset"]
+      });
+      document.addEventListener("load", onImageLoad, true);
       observing = true;
     } else if (!on && observing) {
       observer.disconnect();
+      document.removeEventListener("load", onImageLoad, true);
       observing = false;
     }
   }
@@ -548,7 +584,9 @@
     }
     state.scrollGen += 1;
     if (ocrInFlight) send({ cmd: "cancel", kind: "ocr" }).catch(() => {});
-    for (const record of imageRecords.values()) record.box.style.display = "none";
+    // 좌표 기준 전체가 바뀌므로 숨기는 것만으로는 부족하다(크기가 우연히 비슷하면 다음 통과에서 옛 덮개를
+    // 그대로 다시 보여줄 수 있다). 페이지 이동 때(checkNavigation)처럼 완전히 지우고 다음 통과에서 새로 그린다.
+    clearImageOverlays();
     if (state.auto && state.view === "translated") schedule();
   }
 
