@@ -34,17 +34,20 @@ enum HitRegion: Equatable {
 /// - 크기 조절 히트 밴드는 창 가장자리에서 glowMargin + resizeBand(안쪽 8pt)까지다.
 /// - 헤더 맨 위 topResizeStrip은 세로 크기 조절, 그 아래 헤더 전체는 이동(빈 공간)이다.
 enum OverlayGeometry {
-    static let glowMargin: CGFloat = 10
+    static let glowMargin: CGFloat = 2
     static let cornerRadius: CGFloat = 12
     static let strokeWidth: CGFloat = 1.5
     static let resizeBand: CGFloat = 8
     static let topResizeStrip: CGFloat = 6
-    static let titleStripHeight: CGFloat = 20
-    static let toolbarHeight: CGFloat = 32
+    /// 모든 창 너비에서 한 줄로 고정된 헤더 행(닫기·전체화면·복원·색상·번역 버튼과 빈 이동 공간).
+    static let headerRowHeight: CGFloat = 28
     static let cornerHitSize: CGFloat = 18
-    static var headerHeight: CGFloat { topResizeStrip + titleStripHeight + toolbarHeight }
-    /// 툴바 컨트롤이 잘리지 않는 최소 크기(창 전체 기준)
-    static let minWindowSize = NSSize(width: 620, height: 220)
+    /// 창 전체(글로우 여백 포함)의 최소 크기.
+    static let minWindowSize = NSSize(width: 240, height: 160)
+
+    static func headerHeight(forWidth width: CGFloat) -> CGFloat {
+        topResizeStrip + headerRowHeight
+    }
 
     /// 둥근 테두리 사각형(시각적 창 본체)
     static func frameRect(in bounds: NSRect) -> NSRect {
@@ -53,17 +56,19 @@ enum OverlayGeometry {
 
     static func headerRect(in bounds: NSRect) -> NSRect {
         let f = frameRect(in: bounds)
-        return NSRect(x: f.minX, y: f.maxY - headerHeight, width: f.width, height: headerHeight)
+        let height = headerHeight(forWidth: f.width)
+        return NSRect(x: f.minX, y: f.maxY - height, width: f.width, height: height)
     }
 
     /// 캡처 영역(헤더 아래, 테두리 안쪽). 이 영역만 캡처하고 번역 패치를 그린다.
     static func interiorRect(in bounds: NSRect) -> NSRect {
         let f = frameRect(in: bounds)
+        let height = headerHeight(forWidth: f.width)
         return NSRect(
             x: f.minX + strokeWidth,
             y: f.minY + strokeWidth,
             width: max(1, f.width - strokeWidth * 2),
-            height: max(1, f.height - headerHeight - strokeWidth)
+            height: max(1, f.height - height - strokeWidth)
         )
     }
 
@@ -106,7 +111,7 @@ final class OverlayBorderView: NSView {
     private static let glowColor = NSColor(srgbRed: 0.36, green: 0.68, blue: 1.0, alpha: 0.85)
     /// 늘어나지 않는 가장자리 캡. 세로 캡은 헤더 경계선까지 포함하도록 위아래 동일하게 둔다.
     private static let sideCap: CGFloat = OverlayGeometry.glowMargin + OverlayGeometry.cornerRadius + 2
-    private static let verticalCap: CGFloat = OverlayGeometry.glowMargin + OverlayGeometry.headerHeight + 2
+    private static let verticalCap: CGFloat = OverlayGeometry.glowMargin + OverlayGeometry.headerHeight(forWidth: 0) + 2
     private static let stretch: CGFloat = 2
 
     private var renderedScale: CGFloat = 0
@@ -206,27 +211,66 @@ final class OverlayBorderView: NSView {
 
 /// 헤더 끌기 공통 처리. onWillMove는 실제로 움직인 첫 이벤트 안에서 동기로 실행되므로 값싼 작업만 해야 하며,
 /// 무거운 정리는 다음 명시적 동작(mouseUp)으로 미룬다.
+///
+/// 이동은 NSWindow.performDrag(with:)를 쓰지 않는다 — 이 API는 Apple 공식 문서(returns right away,
+/// a mouse-up event may not get sent)에 따라 즉시 반환되는 비차단 호출이라, 반환 시점을 실제 마우스 업으로
+/// 가정하고 그 뒤에 라이브 마우스 위치/보조키를 읽는 이전 구현은 틀린 전제 위에 있었다.
+/// 대신 이 창의 mouseDragged/mouseUp 이벤트를 while window.nextEvent(matching:)로 직접 추적해
+/// window.setFrameOrigin으로 원점만 옮긴다(크기·레이아웃 재계산 없음). 실제 leftMouseUp 이벤트를
+/// 받는 시점의 마우스 위치와 그 이벤트의 보조키로 내려놓을 자리를 정한다: 화면 꼭대기 근처면
+/// 맞추기(최대화), 그 외 Option이 눌려 있으면 좌/우 절반, 아니면 스냅 없음.
+/// (참고: 네이티브 performDrag와 달리 끄는 도중 다른 Space로 자동 전환되는 macOS 기본 동작은 제공되지 않는다.)
 enum HeaderDrag {
+    /// 화면 물리 프레임 위쪽 가장자리로부터 이 거리(pt) 안쪽에서 놓으면 맞추기로 본다.
+    private static let topEdgeSnapDistance: CGFloat = 16
+
     @MainActor
     static func begin(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?,
-                      onDoubleClick: (() -> Void)?) {
+                      onDoubleClick: (() -> Void)?,
+                      onSnapDrop: ((_ originalFrame: NSRect, _ target: NSRect) -> Void)? = nil) {
         if mouseDown.clickCount == 2 {
             onDoubleClick?()
             return
         }
-        track(from: mouseDown, in: window, onWillMove: onWillMove)
+        track(from: mouseDown, in: window, onWillMove: onWillMove, onSnapDrop: onSnapDrop)
     }
 
     @MainActor
-    static func track(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?) {
-        let start = window.convertPoint(toScreen: mouseDown.locationInWindow)
+    static func track(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?,
+                      onSnapDrop: ((_ originalFrame: NSRect, _ target: NSRect) -> Void)?) {
+        let startMouse = NSEvent.mouseLocation
+        let originalFrame = window.frame
+        var didMove = false
         while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            guard event.type == .leftMouseDragged else { return }
-            let point = window.convertPoint(toScreen: event.locationInWindow)
-            guard point != start else { continue }
-            onWillMove?()
-            // performDrag(with:)는 파라미터가 마우스 다운 "원본" 이벤트여야 한다는 API 계약 때문에 mouseDown을 그대로 넘긴다.
-            window.performDrag(with: mouseDown)
+            let mouse = NSEvent.mouseLocation
+            let dx = mouse.x - startMouse.x
+            let dy = mouse.y - startMouse.y
+
+            if event.type == .leftMouseDragged {
+                guard dx != 0 || dy != 0 else { continue }
+                if !didMove {
+                    didMove = true
+                    onWillMove?()
+                }
+                window.setFrameOrigin(NSPoint(x: originalFrame.origin.x + dx, y: originalFrame.origin.y + dy))
+                continue
+            }
+
+            // event.type == .leftMouseUp
+            guard didMove else { return }
+            guard let screen = WindowGeometry.screen(containing: mouse)
+                ?? WindowGeometry.screen(mostOverlapping: window.frame) else { return }
+            let visible = screen.visibleFrame
+            guard !visible.isEmpty else { return }
+            if mouse.y >= screen.frame.maxY - topEdgeSnapDistance {
+                onSnapDrop?(originalFrame, WindowGeometry.clamp(visible, into: visible))
+            } else if event.modifierFlags.contains(.option) {
+                let halfWidth = visible.width / 2
+                let isLeftHalf = mouse.x < visible.midX
+                let half = NSRect(x: isLeftHalf ? visible.minX : visible.minX + halfWidth,
+                                  y: visible.minY, width: halfWidth, height: visible.height)
+                onSnapDrop?(originalFrame, WindowGeometry.clamp(half, into: visible))
+            }
             return
         }
     }
@@ -245,6 +289,7 @@ final class ResizeHandleView: NSView {
     private var startMouse: NSPoint = .zero
     private var startFrame: NSRect = .zero
     private var didChangeFrame = false
+    private var resizeSymmetricMode = false
 
     init(region: HitRegion) {
         self.region = region
@@ -270,6 +315,7 @@ final class ResizeHandleView: NSView {
         startMouse = NSEvent.mouseLocation
         startFrame = window.frame
         didChangeFrame = false
+        resizeSymmetricMode = event.modifierFlags.contains(.option)
         onResizeBegan?()
         region.cursor.set()
     }
@@ -277,6 +323,16 @@ final class ResizeHandleView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard isEnabled, let window else { return }
         let mouse = NSEvent.mouseLocation
+        let symmetric = event.modifierFlags.contains(.option)
+        /// Option을 누른 채 가장자리/모서리를 끌면 Mac의 대칭 크기 조절처럼 반대쪽 가장자리도
+        /// 같은 양만큼 움직여 원래 중심을 유지한다. 대칭 모드가 끌기 도중 바뀌면 공식이 달라져
+        /// 기존 스냅샷 기준 dx/dy로는 튀므로, 전환되는 순간 현재 창 프레임/마우스 위치로
+        /// 스냅샷을 다시 잡아 그 지점부터 이어서 계산한다.
+        if symmetric != resizeSymmetricMode {
+            startFrame = window.frame
+            startMouse = mouse
+            resizeSymmetricMode = symmetric
+        }
         let dx = mouse.x - startMouse.x
         let dy = mouse.y - startMouse.y
         let minSize = OverlayGeometry.minWindowSize
@@ -284,19 +340,43 @@ final class ResizeHandleView: NSView {
 
         switch region {
         case .resizeLeft, .resizeTopLeft, .resizeBottomLeft:
-            f.size.width = max(minSize.width, startFrame.width - dx)
-            f.origin.x = startFrame.maxX - f.size.width
+            if symmetric {
+                let width = max(minSize.width, startFrame.width - dx * 2)
+                f.size.width = width
+                f.origin.x = startFrame.midX - width / 2
+            } else {
+                f.size.width = max(minSize.width, startFrame.width - dx)
+                f.origin.x = startFrame.maxX - f.size.width
+            }
         case .resizeRight, .resizeTopRight, .resizeBottomRight:
-            f.size.width = max(minSize.width, startFrame.width + dx)
+            if symmetric {
+                let width = max(minSize.width, startFrame.width + dx * 2)
+                f.size.width = width
+                f.origin.x = startFrame.midX - width / 2
+            } else {
+                f.size.width = max(minSize.width, startFrame.width + dx)
+            }
         default:
             break
         }
         switch region {
         case .resizeBottom, .resizeBottomLeft, .resizeBottomRight:
-            f.size.height = max(minSize.height, startFrame.height - dy)
-            f.origin.y = startFrame.maxY - f.size.height
+            if symmetric {
+                let height = max(minSize.height, startFrame.height - dy * 2)
+                f.size.height = height
+                f.origin.y = startFrame.midY - height / 2
+            } else {
+                f.size.height = max(minSize.height, startFrame.height - dy)
+                f.origin.y = startFrame.maxY - f.size.height
+            }
         case .resizeTop, .resizeTopLeft, .resizeTopRight:
-            f.size.height = max(minSize.height, startFrame.height + dy)
+            if symmetric {
+                let height = max(minSize.height, startFrame.height + dy * 2)
+                f.size.height = height
+                f.origin.y = startFrame.midY - height / 2
+            } else {
+                f.size.height = max(minSize.height, startFrame.height + dy)
+            }
         default:
             break
         }
@@ -319,6 +399,12 @@ final class ResizeHandleView: NSView {
 
 /// 헤더(제목줄 + 툴바)의 중립 회색 배경. 윗모서리만 둥글게 테두리와 맞춘다.
 final class HeaderBackgroundView: NSView {
+    /// 마우스가 헤더 위에 없을 때의 옅은 알파. 올리면 1.0으로 또렷해진다.
+    static let idleAlpha: CGFloat = 0.30
+    static let hoverAlpha: CGFloat = 1.0
+
+    private var trackingArea: NSTrackingArea?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -332,6 +418,7 @@ final class HeaderBackgroundView: NSView {
         // 캡처 영역(interiorView)은 번역 스트리밍 중 내용이 계속 바뀌므로 묶지 않는다.
         layer?.shouldRasterize = true
         layer?.rasterizationScale = NSScreen.main?.backingScaleFactor ?? 2
+        alphaValue = Self.idleAlpha
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -341,13 +428,37 @@ final class HeaderBackgroundView: NSView {
         layer?.rasterizationScale = window?.backingScaleFactor ?? layer?.rasterizationScale ?? 2
     }
 
+    /// 헤더 전체(배경 + 그 위 제목줄 버튼들)에 대한 단일 트래킹 영역. 폴링·SwiftUI 상태 없이
+    /// 네이티브 mouseEntered/mouseExited만으로 알파를 오간다. 끌기 중에도 창은 그대로 움직이고
+    /// 버튼·메뉴·팝오버의 히트 테스트는 알파 변경과 무관하게 그대로 동작한다.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        alphaValue = Self.hoverAlpha
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        alphaValue = Self.idleAlpha
+    }
+
     /// 툴바의 SwiftUI 컨트롤이 소비하지 않은 빈 곳 클릭이 여기로 오면 창을 이동한다.
     var isDragEnabled = true
-    /// 실제로 움직이기 시작한 첫 끌기에서 performDrag(with:) 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
+    /// 실제로 움직이기 시작한 첫 끌기(HeaderDrag.track 내부)에서 한 번 호출된다(그냥 클릭이면 호출되지 않음).
     var onDragWillMove: (() -> Void)?
     var onDragFinished: (() -> Void)?
     /// 제목줄 빈 곳을 더블클릭했을 때 호출(겹쳐진 다른 앱 창에 맞추기).
     var onDoubleClick: (() -> Void)?
+    /// 이 끌기가 놓인 자리에서 화면 꼭대기 맞추기나 Option 반쪽 맞추기로 스냅될 때 한 번 호출된다
+    /// (원래 끌기 시작 프레임, 적용할 최종 프레임).
+    var onSnapDrop: ((_ originalFrame: NSRect, _ target: NSRect) -> Void)?
 
     override var isOpaque: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -355,41 +466,59 @@ final class HeaderBackgroundView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isDragEnabled, let window else { return }
-        HeaderDrag.begin(from: event, in: window, onWillMove: onDragWillMove, onDoubleClick: onDoubleClick)
+        HeaderDrag.begin(from: event, in: window, onWillMove: onDragWillMove, onDoubleClick: onDoubleClick,
+                         onSnapDrop: onSnapDrop)
         onDragFinished?()
     }
 }
 
-/// 헤더 맨 위 전체 너비의 제목/이동 스트립. 닫기(숨기기)·주 버튼 외의 어디를 끌어도
-/// 네이티브 NSWindow.performDrag(with:)로 창을 이동한다(HeaderDrag, 이동·크기 잠금 시 비활성).
-/// 주 버튼('번역' ↔ '원문보기')은 단축키(Space/Enter)가 있어 작게 두며, 창 이동을
-/// 가로채지 않도록 closeButton과 같은 방식으로 hitTest에서 직접 가로챈다.
+/// 헤더 전체가 한 줄로 된 제목/이동 스트립. 아이콘 버튼 외의 어디를 끌어도
+/// HeaderDrag.track이 직접 추적하는 mouseDragged/mouseUp 루프로 창을 이동한다(이동·크기 잠금 시 비활성).
+/// 왼쪽부터 닫기·전체화면 맞추기·맞추기 전 크기로, 가운데는 상태 문구만 보이는 빈 끌기 공간,
+/// 오른쪽은 색상·고정(핀)·이동잠금(자물쇠)·주 버튼('번역' ↔ '원문보기')이다. 버튼들은 창 이동을
+/// 가로채지 않도록 hitTest에서 직접 가로챈다.
 final class TitleDragStripView: NSView {
     var isDragEnabled = true
-    /// 실제로 움직이기 시작한 첫 끌기에서 performDrag(with:) 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
+    /// 실제로 움직이기 시작한 첫 끌기(HeaderDrag.track 내부)에서 한 번 호출된다(그냥 클릭이면 호출되지 않음).
     var onDragWillMove: (() -> Void)?
     var onDragFinished: (() -> Void)?
     /// 제목줄 빈 곳을 더블클릭했을 때 호출(겹쳐진 다른 앱 창에 맞추기).
     var onDoubleClick: (() -> Void)?
+    /// 이 끌기가 놓인 자리에서 화면 꼭대기 맞추기나 Option 반쪽 맞추기로 스냅될 때 한 번 호출된다
+    /// (원래 끌기 시작 프레임, 적용할 최종 프레임).
+    var onSnapDrop: ((_ originalFrame: NSRect, _ target: NSRect) -> Void)?
 
     let closeButton: NSButton
+    let fullDisplayButton: NSButton
+    let restoreButton: NSButton
+    let paletteButton: NSButton
+    let pinButton: NSButton
+    let lockButton: NSButton
     let primaryButton: NSButton
-    private let titleLabel = NSTextField(labelWithString: "스크린 메일 번역기")
     let statusLabel = NSTextField(labelWithString: "")
     /// 외부 AI 답변 대기 남은 시간(1:59 → 0:00)을 줄어드는 막대로 보여준다. 그 외에는 숨긴다.
     let remainingBar = NSProgressIndicator()
 
+    private static func iconButton(_ symbol: String, help: String) -> NSButton {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: help) ?? NSImage()
+        let button = NSButton(image: image, target: nil, action: nil)
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+        button.toolTip = help
+        return button
+    }
+
     override init(frame frameRect: NSRect) {
-        let image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "창 숨기기") ?? NSImage()
-        closeButton = NSButton(image: image, target: nil, action: nil)
+        closeButton = Self.iconButton("xmark.circle.fill", help: "창 숨기기 (Esc) — 메뉴 막대 아이콘이나 ⌃⌥⇧⌘T로 다시 열 수 있습니다")
+        fullDisplayButton = Self.iconButton("arrow.up.left.and.arrow.down.right", help: "메뉴 막대와 Dock을 제외한 화면에 맞추기")
+        restoreButton = Self.iconButton("arrow.uturn.backward", help: "맞추기 전 크기로")
+        paletteButton = Self.iconButton("paintpalette", help: "번역문 글자색·배경색·진하기 설정")
+        pinButton = Self.iconButton("pin.fill", help: "항상 위에 고정 (기본 켜짐)")
+        lockButton = Self.iconButton("lock.open", help: "이동·크기 잠금: 켜면 창 이동과 가장자리 크기 조절만 막힙니다")
         primaryButton = NSButton(title: "번역", target: nil, action: nil)
         super.init(frame: frameRect)
-
-        closeButton.isBordered = false
-        closeButton.bezelStyle = .regularSquare
-        closeButton.imageScaling = .scaleProportionallyDown
-        closeButton.contentTintColor = NSColor(calibratedWhite: 0.85, alpha: 1)
-        closeButton.toolTip = "창 숨기기 (Esc) — 메뉴 막대 아이콘이나 ⌃⌥⇧⌘T로 다시 열 수 있습니다"
 
         primaryButton.bezelStyle = .rounded
         primaryButton.controlSize = .mini
@@ -399,8 +528,6 @@ final class TitleDragStripView: NSView {
         primaryButton.bezelColor = .systemBlue
         primaryButton.contentTintColor = .white
 
-        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        titleLabel.textColor = NSColor(calibratedWhite: 0.92, alpha: 1)
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -413,8 +540,9 @@ final class TitleDragStripView: NSView {
         remainingBar.maxValue = 1
         remainingBar.isHidden = true
 
-        [closeButton, titleLabel, statusLabel, remainingBar, primaryButton].forEach(addSubview)
-        toolTip = "이 줄이나 툴바 위 빈 곳을 끌어 창을 이동합니다 (이동·크기 잠금 시 이동 불가). 더블클릭하면 겹쳐진 다른 앱 창의 크기에 맞춥니다"
+        [closeButton, fullDisplayButton, restoreButton, statusLabel, remainingBar,
+         paletteButton, pinButton, lockButton, primaryButton].forEach(addSubview)
+        toolTip = "이 줄의 빈 곳을 끌어 창을 이동합니다 (이동·크기 잠금 시 이동 불가). 더블클릭하면 겹쳐진 다른 앱 창의 크기에 맞춥니다"
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -426,42 +554,57 @@ final class TitleDragStripView: NSView {
     override func layout() {
         super.layout()
         let h = bounds.height
-        let x0: CGFloat = 12
-        closeButton.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
-        titleLabel.sizeToFit()
-        titleLabel.frame.origin = NSPoint(x: closeButton.frame.maxX + 8, y: (h - titleLabel.frame.height) / 2)
+        let iconSize: CGFloat = 14
+        func centeredIconFrame(x: CGFloat) -> NSRect {
+            NSRect(x: x, y: (h - iconSize) / 2, width: iconSize, height: iconSize)
+        }
+
+        closeButton.frame = centeredIconFrame(x: 12)
+        fullDisplayButton.frame = centeredIconFrame(x: closeButton.frame.maxX + 8)
+        restoreButton.frame = centeredIconFrame(x: fullDisplayButton.frame.maxX + 8)
+        let leftEnd = restoreButton.frame.maxX + 10
 
         primaryButton.sizeToFit()
         let buttonWidth = max(44, primaryButton.frame.width)
-        let buttonFrame = NSRect(x: bounds.width - buttonWidth - 10,
+        let primaryFrame = NSRect(x: bounds.width - buttonWidth - 10,
                                   y: (h - primaryButton.frame.height) / 2,
                                   width: buttonWidth,
                                   height: primaryButton.frame.height)
-        primaryButton.frame = buttonFrame
+        primaryButton.frame = primaryFrame
 
-        var trailingX = buttonFrame.minX
+        var trailingX = primaryFrame.minX - 8
+        for button in [lockButton, pinButton, paletteButton] {
+            trailingX -= iconSize
+            button.frame = centeredIconFrame(x: trailingX)
+            trailingX -= 8
+        }
+
+        var rightEnd = trailingX
         if !remainingBar.isHidden {
             let barWidth: CGFloat = 60
-            remainingBar.frame = NSRect(x: trailingX - 8 - barWidth, y: (h - 10) / 2, width: barWidth, height: 10)
-            trailingX = remainingBar.frame.minX
+            rightEnd -= barWidth
+            remainingBar.frame = NSRect(x: rightEnd, y: (h - 10) / 2, width: barWidth, height: 10)
+            rightEnd -= 8
         }
-        let statusX = titleLabel.frame.maxX + 10
         let statusHeight = statusLabel.intrinsicContentSize.height
-        let statusWidth = max(0, trailingX - 8 - statusX)
-        statusLabel.frame = NSRect(x: statusX, y: (h - statusHeight) / 2, width: statusWidth, height: statusHeight)
+        let statusWidth = max(0, rightEnd - leftEnd)
+        statusLabel.frame = NSRect(x: leftEnd, y: (h - statusHeight) / 2, width: statusWidth, height: statusHeight)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
-        if closeButton.frame.contains(local) { return closeButton }
-        if primaryButton.frame.contains(local) { return primaryButton }
+        for button in [closeButton, fullDisplayButton, restoreButton, paletteButton, lockButton, pinButton, primaryButton]
+        where button.frame.contains(local) {
+            return button
+        }
         return self
     }
 
     override func mouseDown(with event: NSEvent) {
         guard isDragEnabled, let window else { return }
-        HeaderDrag.begin(from: event, in: window, onWillMove: onDragWillMove, onDoubleClick: onDoubleClick)
+        HeaderDrag.begin(from: event, in: window, onWillMove: onDragWillMove, onDoubleClick: onDoubleClick,
+                         onSnapDrop: onSnapDrop)
         onDragFinished?()
     }
 }

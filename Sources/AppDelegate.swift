@@ -261,24 +261,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return submenu
     }
 
-    /// 화면 번역 창을 화면·다른 앱 창 크기에 맞춘다. 이동·크기 잠금 중에는 맞추기 항목을 끈다. 번역은 시작하지 않는다.
+    /// 화면 번역 창을 화면·다른 앱 창 크기에 맞춘다. 번역은 시작하지 않는다.
     private func fitMenu() -> NSMenu {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
-        let adjustable = viewModel.isAdjustable
-        if !adjustable {
-            submenu.addItem(info("이동·크기 잠금 중"))
-        }
         let screen = item("화면에 맞추기", #selector(fitOverlayToScreen), symbol: "display")
-        screen.isEnabled = adjustable
-        screen.toolTip = "포인터가 있는 화면의 메뉴 막대·Dock을 뺀 영역에 맞춥니다"
+        screen.toolTip = "포인터가 있는 화면의 메뉴 막대와 Dock을 제외한 화면에 맞춥니다"
         submenu.addItem(screen)
         let window = item("현재 창에 맞추기", #selector(fitOverlayToWindow), symbol: "macwindow")
-        window.isEnabled = adjustable
         window.toolTip = "이 창 가운데 아래에 있는 다른 앱 창(없으면 맨 앞 창)의 크기와 위치에 맞춥니다"
         submenu.addItem(window)
         let restore = item("맞추기 전 크기로", #selector(restoreOverlayFrame), symbol: "arrow.uturn.backward")
-        restore.isEnabled = adjustable && overlay.canRestoreFrameBeforeFit
+        restore.isEnabled = overlay.canRestoreFrameBeforeFit
         submenu.addItem(restore)
         submenu.addItem(.separator())
         let tip = info("제목줄 빈 곳을 더블클릭하면 뒤에 겹쳐진 다른 앱 창 크기에 맞춥니다")

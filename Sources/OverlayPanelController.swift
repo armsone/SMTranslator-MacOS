@@ -54,9 +54,10 @@ final class OverlayPanel: NSPanel {
 /// 테두리 + 헤더(제목 스트립·툴바) + 번역 패치가 모두 들어 있는 하나의 투명 창.
 /// - 중앙 캡처 영역은 항상 클릭 통과. 헤더와 가장자리 크기 조절 밴드 위에서만
 ///   창이 마우스를 받도록 ignoresMouseEvents를 값이 바뀔 때만 토글한다.
-/// - 이동은 네이티브 performDrag(with:)(HeaderDrag), 크기 조절은 ResizeHandleView의 스냅샷+이동량 계산.
+/// - 이동은 HeaderDrag.track이 직접 추적하는 mouseDragged/mouseUp 루프(window.setFrameOrigin),
+///   크기 조절은 ResizeHandleView의 스냅샷+이동량 계산.
 /// - 영역 변경 감지는 1회용이다. 명시적 캡처가 armRegionInvalidation()으로 무장하고, 첫 실제 이동
-///   (performDrag 직전)이나 첫 실제 크기 변경(첫 setFrame 직전)에서 한 번만 결과를 숨기고 onRegionWillChange
+///   (onDragWillMove)이나 첫 실제 크기 변경(첫 setFrame 직전)에서 한 번만 결과를 숨기고 onRegionWillChange
 ///   (세대 무효화·취소만)를 알린다. 무거운 정리(패치 뷰 해제·버튼/상태 갱신·외부 AI 정리)는 그 끌기의
 ///   mouseUp에서 한 번 onRegionChangeEnded로 한다. 그 뒤에는 다음 명시적 캡처까지 didMove 관찰·프레임
 ///   비교·폴링을 전혀 하지 않는다. 움직이지 않은 클릭은 아무것도 바꾸지 않는다.
@@ -230,20 +231,29 @@ final class OverlayPanelController: NSObject {
         headerView.frame = OverlayGeometry.headerRect(in: bounds)
         headerView.autoresizingMask = [.width, .minYMargin]
         let headerBounds = headerView.bounds
-        toolbarHostingView.frame = NSRect(x: 0, y: 0, width: headerBounds.width, height: OverlayGeometry.toolbarHeight)
-        toolbarHostingView.autoresizingMask = [.width]
-        titleStrip.frame = NSRect(x: 0, y: OverlayGeometry.toolbarHeight, width: headerBounds.width, height: OverlayGeometry.titleStripHeight)
-        titleStrip.autoresizingMask = [.width]
+        // 번역 세션(.translationTask)만 유지하는 보이지 않는 호스트. 화면에 그리지 않는다.
+        toolbarHostingView.frame = .zero
+        titleStrip.frame = NSRect(x: 0, y: 0, width: headerBounds.width, height: headerBounds.height)
+        titleStrip.autoresizingMask = [.width, .height]
         titleStrip.closeButton.target = self
         titleStrip.closeButton.action = #selector(closeButtonPressed)
+        titleStrip.fullDisplayButton.target = self
+        titleStrip.fullDisplayButton.action = #selector(fullDisplayButtonPressed)
+        titleStrip.restoreButton.target = self
+        titleStrip.restoreButton.action = #selector(restoreButtonPressed)
+        titleStrip.paletteButton.target = self
+        titleStrip.paletteButton.action = #selector(paletteButtonPressed)
+        titleStrip.pinButton.target = self
+        titleStrip.pinButton.action = #selector(pinButtonPressed)
+        titleStrip.lockButton.target = self
+        titleStrip.lockButton.action = #selector(lockButtonPressed)
         titleStrip.primaryButton.target = self
         titleStrip.primaryButton.action = #selector(primaryButtonPressed)
         titleStrip.onDragWillMove = { [weak self] in self?.dragWillMove() }
-        headerView.onDragWillMove = { [weak self] in self?.dragWillMove() }
         titleStrip.onDragFinished = { [weak self] in self?.dragFinished() }
-        headerView.onDragFinished = { [weak self] in self?.dragFinished() }
         titleStrip.onDoubleClick = { [weak self] in self?.fitToWindowBehindOnDoubleClick() }
-        headerView.onDoubleClick = { [weak self] in self?.fitToWindowBehindOnDoubleClick() }
+        titleStrip.onSnapDrop = { [weak self] original, target in self?.applySnapDrop(originalFrame: original, target: target) }
+        headerView.onSnapDrop = { [weak self] original, target in self?.applySnapDrop(originalFrame: original, target: target) }
         aibiClipView.frame = headerBounds
         aibiClipView.autoresizingMask = [.width, .height]
         aibiClipView.wantsLayer = true
@@ -327,9 +337,44 @@ final class OverlayPanelController: NSObject {
                 self.titleStrip.needsLayout = true
             }
             .store(in: &cancellables)
+
+        viewModel.$isAlwaysOnTop
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isOn in
+                guard let self else { return }
+                self.titleStrip.pinButton.image = NSImage(systemSymbolName: isOn ? "pin.fill" : "pin.slash",
+                                                           accessibilityDescription: nil)
+                self.titleStrip.pinButton.toolTip = isOn ? "항상 위에 고정 (켜짐)" : "항상 위에 고정 (꺼짐)"
+            }
+            .store(in: &cancellables)
+
+        viewModel.$isAdjustable
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isOn in
+                guard let self else { return }
+                self.titleStrip.lockButton.image = NSImage(systemSymbolName: isOn ? "lock.open" : "lock.fill",
+                                                            accessibilityDescription: nil)
+                self.titleStrip.lockButton.toolTip = isOn ? "이동·크기 잠금 (꺼짐)" : "이동·크기 잠금 (켜짐)"
+            }
+            .store(in: &cancellables)
+    }
+
+    /// .idle과 '번역을 눌러…' 안내 문구(언어·방식 변경 시의 .info)는 창을 움직이거나 설정을 바꿀
+    /// 때마다 반복해서 들어와 라벨을 깜빡이게 만들 뿐, 실제 진행 상태가 아니므로 화면에 올리지 않는다.
+    /// 인식·번역·완료·오류 상태는 그대로 보인다.
+    private static func isSetupInstruction(_ status: AppStatus) -> Bool {
+        switch status {
+        case .idle: return true
+        case .info(let message): return message.contains("번역을 눌러")
+        default: return false
+        }
     }
 
     private func applyStatus(_ status: AppStatus) {
+        guard !Self.isSetupInstruction(status) else {
+            titleStrip.statusLabel.isHidden = true
+            return
+        }
         titleStrip.statusLabel.isHidden = false
         titleStrip.statusLabel.stringValue = status.koreanText
         titleStrip.statusLabel.toolTip = status.koreanText
@@ -390,6 +435,36 @@ final class OverlayPanelController: NSObject {
         viewModel.requestHide()
     }
 
+    @objc private func fullDisplayButtonPressed() {
+        _ = fitToScreen()
+    }
+
+    @objc private func restoreButtonPressed() {
+        _ = restoreFrameBeforeFit()
+    }
+
+    @objc private func pinButtonPressed() {
+        viewModel.isAlwaysOnTop.toggle()
+    }
+
+    @objc private func lockButtonPressed() {
+        viewModel.isAdjustable.toggle()
+    }
+
+    private var colorPopover: NSPopover?
+
+    @objc private func paletteButtonPressed() {
+        if let popover = colorPopover, popover.isShown {
+            popover.close()
+            return
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: PatchColorSettingsView(viewModel: viewModel))
+        colorPopover = popover
+        popover.show(relativeTo: titleStrip.paletteButton.bounds, of: titleStrip.paletteButton, preferredEdge: .minY)
+    }
+
     /// 캡처해야 하는 실제 화면 영역(헤더·테두리를 제외한 인터리어)을 화면 좌표로 반환.
     var captureScreenFrame: CGRect {
         let interior = OverlayGeometry.interiorRect(in: NSRect(origin: .zero, size: panel.frame.size))
@@ -437,7 +512,7 @@ final class OverlayPanelController: NSObject {
         isRegionWatchArmed = true
     }
 
-    /// 첫 실제 이동(performDrag 직전)·첫 실제 크기 변경(첫 setFrame 직전)에서 불린다. 무장돼 있을 때만
+    /// 첫 실제 이동(onDragWillMove)·첫 실제 크기 변경(첫 setFrame 직전)에서 불린다. 무장돼 있을 때만
     /// 한 번 알리고 곧바로 해제하므로, 이후 같은 끌기·다음 끌기에서는 즉시 돌아온다.
     /// 이 시점에는 결과를 숨기기만 한다(레이어 hidden 플래그). 패치 뷰 제거·이미지 해제·버튼/상태 갱신은
     /// regionChangeEnded()(mouseUp 한 번)로 미룬다.
@@ -454,19 +529,34 @@ final class OverlayPanelController: NSObject {
     }
 
     /// 끌기·크기 조절이 끝났을 때(mouseUp) 미뤄 둔 정리를 한 번만 알린다. 버튼이 아직 눌려 있으면
-    /// (performDrag가 끝나기 전에 돌아온 경우) 기다렸다가 다음 leftMouseUp 모니터에서 부른다.
+    /// 기다렸다가 다음 leftMouseUp 모니터에서 부른다.
     private func regionChangeEnded() {
         guard isRegionChangeEndPending, NSEvent.pressedMouseButtons & 1 == 0 else { return }
         isRegionChangeEndPending = false
         onRegionChangeEnded?()
     }
 
-    /// 일반 끌기의 첫 실제 이동. 1회용 무효화만 한다.
+    /// 일반 끌기의 첫 실제 이동. 1회용 무효화만 한다(화면 꼭대기 맞추기·Option 반쪽 맞추기 스냅도 같은
+    /// HeaderDrag.track 루프 안에서 들어오고, 스냅 여부는 나중에 onSnapDrop에서 한 번 더 결정된다).
+    private var dragStartSize: NSSize = .zero
     private func dragWillMove() {
+        dragStartSize = panel.frame.size
         regionWillChange()
     }
 
+    /// 끌기가 화면 꼭대기 맞추기나 Option 반쪽 맞추기로 내려놓였을 때(HeaderDrag.track의 onSnapDrop) 한 번만
+    /// 불린다. '맞추기 전 크기로'가 되돌릴 수 있도록 끌기 시작 프레임(이동된 프레임이 아니라)을 저장한 뒤
+    /// 스냅 프레임을 적용한다. 크기 저장·정리는 이어서 호출되는 dragFinished()가 한 번에 한다.
+    private func applySnapDrop(originalFrame: NSRect, target: NSRect) {
+        guard isAdjustable else { return }
+        if frameBeforeFit == nil { frameBeforeFit = originalFrame }
+        panel.setFrame(target, display: true)
+    }
+
+    /// 스냅으로 크기가 바뀐 경우에만 저장한다(일반 이동은 크기가 그대로라 아무것도 하지 않는다).
     private func dragFinished() {
+        let size = panel.frame.size
+        if size != dragStartSize { saveSize(size) }
         regionChangeEnded()
         resetHover()
     }
@@ -492,14 +582,14 @@ final class OverlayPanelController: NSObject {
     private var frameBeforeFit: NSRect?
     var canRestoreFrameBeforeFit: Bool { frameBeforeFit != nil }
 
-    /// 포인터가 있는 화면(없으면 이 창이 가장 많이 걸친 화면)의 사용 가능 영역 전체에 맞춘다.
-    /// macOS 전체 화면 Space가 아니라 메뉴 막대·Dock을 뺀 visibleFrame이다.
+    /// 포인터가 있는 화면(없으면 이 창이 가장 많이 걸친 화면)의 메뉴 막대와 Dock을 제외한 화면에
+    /// 맞춘다(사용 가능한 최대 영역이면서 헤더 툴바가 메뉴 막대 아래 가려지지 않는다).
     @discardableResult
     func fitToScreen() -> Bool {
         let screen = WindowGeometry.screen(containing: NSEvent.mouseLocation)
             ?? WindowGeometry.screen(mostOverlapping: panel.frame)
         guard let visible = screen?.visibleFrame, !visible.isEmpty else { return false }
-        return applyFittedFrame(WindowGeometry.clamp(visible, into: visible))
+        return applyFittedFrame(visible)
     }
 
     /// 다른 앱의 보이는 일반 창에 맞춘다. 창 목록은 이 호출에서 한 번만 읽는다.
@@ -526,7 +616,9 @@ final class OverlayPanelController: NSObject {
     /// 프레임을 한 번 바꾸고 크기를 한 번 저장한다. 번역·캡처는 시작하지 않는다.
     private func applyFittedFrame(_ frame: NSRect) -> Bool {
         guard isAdjustable, !isResizing, frame != panel.frame else { return false }
-        frameBeforeFit = panel.frame
+        // 연달아 맞추기를 여러 번 눌러도 맨 처음(사용자가 직접 두었던) 프레임만 보존한다.
+        // '맞추기 전 크기로'가 되돌린 뒤에는 다시 다음 맞추기에서 그 시점을 새로 저장한다.
+        if frameBeforeFit == nil { frameBeforeFit = panel.frame }
         regionWillChange()
         panel.setFrame(frame, display: true)
         saveSize(frame.size)

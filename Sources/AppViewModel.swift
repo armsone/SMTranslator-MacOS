@@ -33,13 +33,6 @@ final class AppViewModel: ObservableObject {
     }
     var statusPublisher: AnyPublisher<AppStatus, Never> { statusSubject.eraseToAnyPublisher() }
     private let statusSubject = CurrentValueSubject<AppStatus, Never>(.idle)
-    /// true면 이동·크기 조절 가능, false면 '이동·크기 잠금' 상태(툴바/버튼은 계속 동작).
-    @Published var isAdjustable: Bool = true {
-        didSet { overlay?.isAdjustable = isAdjustable }
-    }
-    @Published var isAlwaysOnTop: Bool = true {
-        didSet { overlay?.isAlwaysOnTop = isAlwaysOnTop }
-    }
     /// 캡처·인식·번역이 진행 중인 동안 true. 주 버튼과 Space/Enter가 비활성화된다.
     @Published private(set) var isProcessing: Bool = false
     @Published private(set) var primaryAction: PrimaryAction = .captureAndTranslate
@@ -51,6 +44,14 @@ final class AppViewModel: ObservableObject {
             colorSettings.saveToDefaults()
             overlay?.updatePatchColorSettings(colorSettings)
         }
+    }
+    /// 창 핀(항상 위에 고정) 토글. 기본 켜짐.
+    @Published var isAlwaysOnTop: Bool = true {
+        didSet { overlay?.isAlwaysOnTop = isAlwaysOnTop }
+    }
+    /// 이동·크기 잠금 해제 여부. false면 이동·크기 조절이 막힌다. 기본 꺼짐(이동·크기 조절 가능).
+    @Published var isAdjustable: Bool = true {
+        didSet { overlay?.isAdjustable = isAdjustable }
     }
 
     /// 언어 조합이 바뀔 때만 새로 만든다. 같은 조합이면 캡처마다 세션을 재설정하지 않고
@@ -129,9 +130,9 @@ final class AppViewModel: ObservableObject {
 
     func attach(overlay: OverlayPanelController) {
         self.overlay = overlay
-        overlay.isAdjustable = isAdjustable
-        overlay.isAlwaysOnTop = isAlwaysOnTop
         overlay.updatePatchColorSettings(colorSettings)
+        overlay.isAlwaysOnTop = isAlwaysOnTop
+        overlay.isAdjustable = isAdjustable
         overlay.onRegionWillChange = { [weak self] in
             self?.regionWillChange()
         }
@@ -197,15 +198,6 @@ final class AppViewModel: ObservableObject {
         stopExternalRun()
         jobContinuation?.finish()
         jobContinuation = nil
-    }
-
-    func copyTranslatedText() {
-        finishRegionChange()
-        let text = translatedPatches.map(\.translatedText).joined(separator: "\n")
-        guard !text.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
     }
 
     /// 원문보기: 번역 패치만 숨겨 창 아래 실제 화면을 그대로 보인다(캡처 이미지를 그리지 않음).
