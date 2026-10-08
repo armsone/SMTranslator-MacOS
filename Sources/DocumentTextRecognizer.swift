@@ -18,9 +18,10 @@ struct DocumentTextParagraph {
 @available(macOS 26.0, *)
 enum DocumentTextRecognizer {
     /// 자동 인식 때 우선순위로 넘기는 언어 목록. 일본어로 고정하지 않고 앱이 지원하는
-    /// 언어(ja/en/zh-Hans/ko) 전체를 후보로 둔다.
+    /// 언어(ja/en/zh-Hans/zh-Hant/ko) 전체를 후보로 둔다. 기기가 지원하지 않는 후보는
+    /// 호출부의 supportedRecognitionLanguages 필터에서 걸러진다.
     static let automaticLanguages: [Locale.Language] = [
-        AppLanguage.japanese, .english, .chineseSimplified, .korean
+        AppLanguage.japanese, .english, .chineseSimplified, .chineseTraditional, .korean
     ].map(\.localeLanguage)
 
     /// - Parameters:

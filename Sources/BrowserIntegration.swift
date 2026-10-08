@@ -141,13 +141,15 @@ final class BrowserIntegration: ObservableObject {
                 translator = BrowserHostedTranslator()
             }
             let key = Self.enabledKey
-            let engine = BrowserEngine(translator: translator, isEnabled: { UserDefaults.standard.bool(forKey: key) })
+            // 확장에서 웹 번역 엔진을 고른 요청만 앱의 웹 번역 실행기로 넘긴다(앱 쪽 제공사별 동의 필요).
+            let engine = BrowserEngine(translator: translator, external: WebTranslatorBrowserBridge(),
+                                       isEnabled: { UserDefaults.standard.bool(forKey: key) })
             server = BrowserBridgeServer(engine: engine)
         }
         if let failure = server?.start() {
             serverStatus = failure
         } else {
-            serverStatus = isEnabled ? "대기 중 (Mac 기본 번역)" : "연결 허용 전 — 요청을 처리하지 않음"
+            serverStatus = isEnabled ? "대기 중 (기본: Mac 기본 번역)" : "연결 허용 전 — 요청을 처리하지 않음"
         }
     }
 

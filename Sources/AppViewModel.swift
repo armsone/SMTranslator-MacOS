@@ -16,6 +16,7 @@ import Translation
 ///   번역한다. 숫자·기호만 있는 줄과 이미 번역 언어인 줄은 요청 없이 원문 그대로 둔다.
 /// - 외부 AI(ChatGPT·Claude·Gemini)는 인식한 줄 텍스트만 큰 묶음(t1…tn → 줄 ID)으로 보내고, 검증된 항목만
 ///   해당 줄의 바운딩 박스에 그린다. 스크린샷 이미지는 보내지 않으며, 다른 방식으로 자동 대체하지 않는다.
+/// - 웹 번역기(DeepL·Google·Papago)는 인식한 줄을 한 줄씩 공식 번역 페이지에 넣고, 받은 결과를 그 줄 자리에만 그린다.
 @MainActor
 final class AppViewModel: ObservableObject {
     /// 원문 언어. 기본값은 자동 인식(줄마다 언어를 판별해 언어별 묶음으로 번역)이다.
@@ -346,10 +347,10 @@ final class AppViewModel: ObservableObject {
     private func captureOnce() {
         guard let overlay, overlay.isVisible else { return }
         let method = backend
-        // 외부 AI는 처음 쓰는 제공사면 캡처 전에 전송 동의부터 묻는다(방식을 고르는 것만으로는 보내지 않음).
-        if let provider = method.provider, !AIBIAccounts.shared.hasConsent(provider) {
-            guard confirmExternalConsent(provider) else {
-                status = .info("\(provider.title) 전송에 동의하지 않아 번역하지 않았습니다")
+        // 외부 방식은 처음 쓰는 제공사면 캡처 전에 전송 동의부터 묻는다(방식을 고르는 것만으로는 보내지 않음).
+        if let service = method.externalService, !service.hasConsent {
+            guard confirmExternalConsent(service) else {
+                status = .info("\(service.title) 전송에 동의하지 않아 번역하지 않았습니다")
                 return
             }
             guard overlay.isVisible, method == backend else { return }
@@ -372,15 +373,15 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func confirmExternalConsent(_ provider: AIProvider) -> Bool {
+    private func confirmExternalConsent(_ service: ExternalService) -> Bool {
         NSApp.activate()
         let alert = NSAlert()
-        alert.messageText = "\(provider.title)로 번역할까요?"
-        alert.informativeText = ExternalConsent.message(for: provider)
+        alert.messageText = "\(service.title)로 번역할까요?"
+        alert.informativeText = service.consentMessage
         alert.addButton(withTitle: "동의하고 번역")
         alert.addButton(withTitle: "취소")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        AIBIAccounts.shared.grantConsent(provider)
+        service.grantConsent()
         return true
     }
 
@@ -522,6 +523,10 @@ final class AppViewModel: ObservableObject {
 
         if let provider = method.provider {
             startExternal(provider: provider, generation: generation, source: source, target: target)
+            return
+        }
+        if let translator = method.webTranslator {
+            startWebExternal(translator, generation: generation, source: source, target: target, languageByLine: languageByLine)
             return
         }
 
@@ -754,6 +759,59 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// 웹 번역기: 아직 받지 못한 줄을 한 줄씩 보내고, 받은 결과는 그 줄의 바운딩 박스에만 그린다.
+    /// 자동 인식이면 줄마다 판별한 언어를, 직접 고르면 그 언어를 원문 언어로 지정한다(판별 못 한 줄은 이미 원문 유지로 빠졌다).
+    /// 페이지 이동을 줄이려고 같은 언어 줄을 이어서 보낸다. 실패한 줄은 표시하고 계속하며, 멈춰야 하는 오류는 받은 줄을 둔 채 끝낸다.
+    private func startWebExternal(_ translator: WebTranslator, generation: Int, source: SourceSelection, target: AppLanguage,
+                                  languageByLine: [Int: String]) {
+        externalFailedLineIDs = []
+        externalBatch = nil
+        isExternalRunning = true
+        refreshWebStatus(translator)
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshWebStatus(translator) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        externalStatusTimer = timer
+        let ticket = WebTranslatorRunner.shared.ticket(for: .screen)
+        var order: [String] = []
+        var items: [(id: Int, language: String)] = []
+        for id in pendingExternalLineIDs {
+            guard let language = source.language?.rawValue ?? languageByLine[id] else { continue }
+            if !order.contains(language) { order.append(language) }
+            items.append((id, language))
+        }
+        items.sort { (order.firstIndex(of: $0.language) ?? 0, $0.id) < (order.firstIndex(of: $1.language) ?? 0, $1.id) }
+        let limited = items.count > WebTranslation.itemsPerAction
+        externalTask = Task { [weak self] in
+            guard let self else { return }
+            for item in items.prefix(WebTranslation.itemsPerAction) {
+                guard self.isCurrent(generation), !Task.isCancelled else { return }
+                guard let line = self.currentLines[item.id], !self.receivedLineIDs.contains(item.id) else { continue }
+                let result = await WebTranslatorRunner.shared.translate(
+                    line.text, source: item.language, target: target.rawValue, using: translator,
+                    owner: .screen, ticket: ticket, surface: self.aibiSurface)
+                guard self.isCurrent(generation) else { return }
+                switch result {
+                case .success(let translated):
+                    self.appendPatch(TranslatedPatch(id: item.id, translatedText: translated, boundingBox: line.boundingBox,
+                                                     autoBackgroundColor: self.lineBackgroundColors[item.id]))
+                case .failure(.item), .failure(.unsupported):
+                    self.externalFailedLineIDs.insert(item.id)
+                case .failure(.cancelled):
+                    self.finishExternal(generation: generation, failure: nil, cancelled: true)
+                    return
+                case .failure(.fatal(let message)):
+                    self.finishExternal(generation: generation, failure: message)
+                    return
+                }
+            }
+            guard self.isCurrent(generation) else { return }
+            self.finishExternal(generation: generation, failure: limited
+                ? "한 번 실행에서 보낼 수 있는 줄 수(\(WebTranslation.itemsPerAction)줄)를 넘었습니다. 영역을 줄여 다시 번역하세요." : nil)
+        }
+    }
+
     /// 입력 직전에 한 번 호출된다. 아직 받지 못한 줄을 읽는 순서대로 묶는다.
     private func makeExternalBatch(source: SourceSelection, target: AppLanguage) -> ExternalBatch? {
         var items: [ExternalBatchItem] = []
@@ -816,7 +874,8 @@ final class AppViewModel: ObservableObject {
             if cancelled {
                 status = .info("취소됨 (\(progress))")
             } else if let failure {
-                status = .error("외부 AI 번역 실패 (\(progress) 완료): \(failure)")
+                let label = backend.webTranslator.map { "\($0.title) 번역 실패" } ?? "외부 AI 번역 실패"
+                status = .error("\(label) (\(progress) 완료): \(failure)")
             } else {
                 status = .error("일부 줄을 번역하지 못했습니다 (\(progress) 완료). 다시 번역을 눌러주세요.")
             }
@@ -835,6 +894,7 @@ final class AppViewModel: ObservableObject {
             externalTask?.cancel()
             externalTask = nil
             AIBIRunner.shared.cancel(owner: .screen)
+            WebTranslatorRunner.shared.cancel(owner: .screen)
         }
     }
 
@@ -846,6 +906,19 @@ final class AppViewModel: ObservableObject {
             provider: provider.title,
             stage: run?.stage ?? "준비 중",
             remaining: run?.observationDeadline.map { max(0, $0.timeIntervalSinceNow) },
+            done: receivedLineIDs.count,
+            total: currentLines.count)
+        if status != next { status = next }
+    }
+
+    /// 제목줄 상태: 웹 번역기 · 단계 · 완료 줄 수
+    private func refreshWebStatus(_ translator: WebTranslator) {
+        guard isProcessing, isExternalRunning else { return }
+        let run = WebTranslatorRunner.shared.status
+        let next = AppStatus.externalTranslating(
+            provider: translator.title,
+            stage: run.map { $0.owner == .screen ? $0.stage : "차례 기다리는 중" } ?? "준비 중",
+            remaining: nil,
             done: receivedLineIDs.count,
             total: currentLines.count)
         if status != next { status = next }

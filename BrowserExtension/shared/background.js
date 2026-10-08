@@ -1,7 +1,9 @@
 "use strict";
 // SMT 웹 번역 — 백그라운드(Chrome·Whale 서비스 워커 / Safari 이벤트 페이지 공용).
 // - 페이지 글자·보이는 탭 캡처는 이 Mac의 SMT 엔진(Chrome·Whale: 네이티브 메시징 도우미, Safari: 확장 앱)으로만 보낸다.
-// - 저장하는 값: 동의 여부, 번역 언어, 이미지 번역 여부, 전역 자동 번역 켜짐 여부. 페이지 내용은 저장하지 않는다.
+//   기본 번역 엔진은 Mac 기본 번역(기기 내)이다. Chrome·Whale에서 사용자가 웹 번역 엔진(DeepL·Google·Papago)을 따로 고르고
+//   그 엔진에 동의한 경우에만 SMT가 글자(이미지는 Mac에서 인식한 글자)를 그 서비스의 공식 웹페이지로 보낸다. Safari는 Mac 기본만.
+// - 저장하는 값: 동의 여부, 번역 언어, 번역 엔진과 엔진별 동의, 이미지 번역 여부, 전역 자동 번역 켜짐 여부. 페이지 내용은 저장하지 않는다.
 // - 요청마다 ID를 붙여 탭별로 추적하고, 탭 이동·닫기·스크롤(이미지) 때 그 탭의 요청만 취소한다.
 // - 전역 자동 번역(automaticEnabled)은 번역 버튼을 누를 때만 켜진다(이전 sites 목록은 더는 옵트인 신호로 쓰지 않는다).
 //   Chrome·Whale은 팝업이 그 클릭 안에서 선택 권한 <all_urls>(captureVisibleTab 문서상 activeTab 대신 필요한 권한)를
@@ -14,14 +16,18 @@ const api = globalThis.browser ?? globalThis.chrome;
 const IS_SAFARI = api.runtime.getURL("").startsWith("safari-web-extension:");
 const HOST_NAME = "com.local.screentranslator.browser";
 const SAFARI_APP_ID = "com.local.screentranslator";
-const TARGETS = ["ko", "en", "ja", "zh-Hans"];
+const TARGETS = ["ko", "en", "ja", "zh-Hans", "zh-Hant"];
 const ALL_URLS = "<all_urls>";
 const TAB_MESSAGE_TIMEOUT = 5000;
 const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16 };
-const TIMEOUT = { hello: 15000, text: 60000, ocr: 90000 };
+// 웹 번역 엔진은 SMT가 항목마다 차례로 공식 페이지에 넣으므로 요청을 작게 하고 오래 기다린다(페이지 확인을 사용자가 할 시간 포함).
+const EXTERNAL_LIMITS = { texts: 12, chars: 15000 };
+const TIMEOUT = { hello: 15000, text: 60000, ocr: 90000, external: 600000 };
+const LOCAL_ENGINE = "apple";
+const EXTERNAL_ENGINES = IS_SAFARI ? [] : ["deepl", "google", "papago"];
 const CAPTURE_MIN_INTERVAL = 700; // Chrome captureVisibleTab 호출 빈도 제한(초당 2회) 아래로 유지
 const CAPTURE_TTL = 15000;
-const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false };
+const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [] };
 
 function codedError(code, message) {
   const error = new Error(message || code);
@@ -40,11 +46,18 @@ function originOf(url) {
 
 async function loadSettings() {
   const stored = await api.storage.local.get(DEFAULTS);
+  const engineConsents = Array.isArray(stored.engineConsents)
+    ? stored.engineConsents.filter((engine) => EXTERNAL_ENGINES.includes(engine))
+    : [];
+  // 웹 번역 엔진은 이 브라우저에서 지원하고 그 엔진에 동의했을 때만 쓴다. 아니면 Mac 기본 번역.
+  const engine = EXTERNAL_ENGINES.includes(stored.engine) && engineConsents.includes(stored.engine) ? stored.engine : LOCAL_ENGINE;
   return {
     consent: stored.consent === true,
     target: TARGETS.includes(stored.target) ? stored.target : "ko",
     images: stored.images !== false,
-    automaticEnabled: stored.automaticEnabled === true
+    automaticEnabled: stored.automaticEnabled === true,
+    engine,
+    engineConsents
   };
 }
 
@@ -241,7 +254,11 @@ const native = {
     return {
       enabled: response.enabled === true,
       engineTitle: typeof response.engineTitle === "string" ? response.engineTitle : "Mac 기본 번역",
-      version: typeof response.version === "string" ? response.version : ""
+      version: typeof response.version === "string" ? response.version : "",
+      // 구버전 SMT나 Safari 확장 앱은 웹 번역 엔진을 알리지 않는다.
+      externalEngines: Array.isArray(response.externalEngines)
+        ? response.externalEngines.filter((engine) => EXTERNAL_ENGINES.includes(engine))
+        : []
     };
   }
 };
@@ -286,20 +303,61 @@ function takeCapture(tabId, id) {
 
 // MARK: - 내용 스크립트 요청 처리
 
-function validTexts(texts) {
-  if (!Array.isArray(texts) || texts.length === 0 || texts.length > LIMITS.texts) return false;
+function validTexts(texts, engine) {
+  const external = engine !== LOCAL_ENGINE;
+  const maxTexts = external ? EXTERNAL_LIMITS.texts : LIMITS.texts;
+  if (!Array.isArray(texts) || texts.length === 0 || texts.length > maxTexts) return false;
   let total = 0;
   for (const text of texts) {
     if (typeof text !== "string" || text.length > LIMITS.textLength) return false;
     total += text.length;
   }
-  return total <= LIMITS.chars;
+  return total <= (external ? EXTERNAL_LIMITS.chars : LIMITS.chars);
+}
+
+/** 내용 스크립트가 쓴 엔진이 지금 설정과 같을 때만 보낸다(엔진을 바꾼 직후 늦게 온 요청은 버린다). */
+function requestEngine(message, settings) {
+  const engine = typeof message.engine === "string" ? message.engine : LOCAL_ENGINE;
+  if (engine !== settings.engine) throw codedError("cancelled", "");
+  return engine;
+}
+
+function engineTimeout(engine, local) {
+  return engine === LOCAL_ENGINE ? local : TIMEOUT.external;
+}
+
+function sanitizeWarning(warning) {
+  return typeof warning === "string" ? warning.slice(0, 300) : "";
 }
 
 function validRegions(regions) {
   return Array.isArray(regions) && regions.length > 0 && regions.length <= LIMITS.regions && regions.every((r) =>
     r && typeof r.k === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(r.k) &&
     ["x", "y", "w", "h"].every((key) => Number.isFinite(r[key])) && r.w >= 1 && r.h >= 1);
+}
+
+const LANG_CODE = /^[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8}){0,2}$/;
+
+/** 번역 응답의 조각별 인식 언어: 언어 코드 문자열, "unknown"(판별 못함), null(글자 없음·구버전)만 통과시킨다. */
+function sanitizeLangs(langs, expectedLength) {
+  if (!Array.isArray(langs) || langs.length !== expectedLength) return null;
+  return langs.map((lang) => {
+    if (lang === null) return null;
+    if (lang === "unknown") return "unknown";
+    return typeof lang === "string" && LANG_CODE.test(lang) ? lang : null;
+  });
+}
+
+/** OCR 이미지별 인식 언어 개수: {언어코드|"unknown": 양의 정수} 형태만 통과시킨다. */
+function sanitizeLangCounts(langs) {
+  const result = {};
+  if (!langs || typeof langs !== "object") return result;
+  for (const [key, value] of Object.entries(langs)) {
+    if (key !== "unknown" && !LANG_CODE.test(key)) continue;
+    const n = Number(value);
+    if (Number.isInteger(n) && n > 0 && n <= LIMITS.texts) result[key] = n;
+  }
+  return result;
 }
 
 function sanitizeImages(images) {
@@ -314,7 +372,8 @@ function sanitizeImages(images) {
       x: item.x, y: item.y, w: item.w, h: item.h, t: item.t,
       bg: hex.test(item.bg) ? item.bg : "#FFFFFF",
       fg: hex.test(item.fg) ? item.fg : "#000000"
-    }))
+    })),
+    langs: sanitizeLangCounts(image?.langs)
   }));
 }
 
@@ -334,16 +393,18 @@ async function handleContent(message, sender) {
   switch (message.cmd) {
     case "translate": {
       if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
-      if (!TARGETS.includes(message.target) || !validTexts(message.texts)) throw codedError("bad_request", "잘못된 번역 요청입니다.");
+      const engine = requestEngine(message, settings);
+      if (!TARGETS.includes(message.target) || !validTexts(message.texts, engine)) throw codedError("bad_request", "잘못된 번역 요청입니다.");
       const response = await native.request(
-        { v: 1, type: "translate", id: native.nextId("t"), target: message.target, texts: message.texts },
-        { timeout: TIMEOUT.text, tabId: tab.id, kind: "text" });
+        { v: 1, type: "translate", id: native.nextId("t"), target: message.target, texts: message.texts, engine },
+        { timeout: engineTimeout(engine, TIMEOUT.text), tabId: tab.id, kind: "text" });
       if (epoch !== control.epoch) throw codedError("cancelled", "");
       const texts = Array.isArray(response.texts) && response.texts.length === message.texts.length
         ? response.texts.map((t) => (typeof t === "string" ? t : null))
         : null;
       if (!texts) throw codedError("bad_response", "SMT 응답 형식이 올바르지 않습니다.");
-      return { ok: true, texts, missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [] };
+      return { ok: true, texts, missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [],
+               langs: sanitizeLangs(response.langs, texts.length), warning: sanitizeWarning(response.warning) };
     }
     case "capture": {
       if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
@@ -357,6 +418,7 @@ async function handleContent(message, sender) {
     case "ocr": {
       if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
       const viewport = message.viewport;
+      const engine = requestEngine(message, settings);
       if (!TARGETS.includes(message.target) || !validRegions(message.regions) ||
           !viewport || !Number.isFinite(viewport.w) || !Number.isFinite(viewport.h)) {
         throw codedError("bad_request", "잘못된 이미지 요청입니다.");
@@ -365,11 +427,12 @@ async function handleContent(message, sender) {
       if (!image) throw codedError("stale", "");
       const response = await native.request(
         { v: 1, type: "ocr", id: native.nextId("o"), target: message.target, image,
-          viewport: { w: viewport.w, h: viewport.h }, regions: message.regions },
-        { timeout: TIMEOUT.ocr, tabId: tab.id, kind: "ocr" });
+          viewport: { w: viewport.w, h: viewport.h }, regions: message.regions, engine },
+        { timeout: engineTimeout(engine, TIMEOUT.ocr), tabId: tab.id, kind: "ocr" });
       if (epoch !== control.epoch) throw codedError("cancelled", "");
       return { ok: true, images: sanitizeImages(response.images),
-               missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [] };
+               missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [],
+               warning: sanitizeWarning(response.warning) };
     }
     case "cancel": {
       captures.delete(tab.id);
@@ -424,6 +487,7 @@ function configureMessage(settings, epoch, extra = {}) {
     epoch,
     auto: settings.automaticEnabled === true,
     target: settings.target,
+    engine: settings.engine,
     images: settings.images,
     ...extra
   };
@@ -543,7 +607,7 @@ async function handlePopup(message) {
         }
       }
       const page = tabId !== null && origin ? await sendToTab(tabId, { cmd: "state" }) : null;
-      return { ok: true, settings, origin, engine, page, grant, safari: IS_SAFARI };
+      return { ok: true, settings, origin, engine, page, grant, safari: IS_SAFARI, externalEngines: EXTERNAL_ENGINES };
     }
     case "consent": {
       await api.storage.local.set({ consent: true });
@@ -552,6 +616,29 @@ async function handlePopup(message) {
     case "setTarget": {
       if (!TARGETS.includes(message.target)) throw codedError("bad_request", "지원하지 않는 언어입니다.");
       await api.storage.local.set({ target: message.target });
+      return { ok: true, page: await reconfigure(tabId, origin) };
+    }
+    case "setEngine": {
+      // 웹 번역 엔진은 팝업에서 사용자가 그 엔진의 전송 안내를 보고 동의(consent: true)했거나 이미 동의한 경우에만 고른다.
+      const engine = message.engine;
+      if (engine !== LOCAL_ENGINE && !EXTERNAL_ENGINES.includes(engine)) {
+        throw codedError("bad_request", IS_SAFARI ? "Safari에서는 Mac 기본 번역만 쓸 수 있습니다." : "지원하지 않는 번역 엔진입니다.");
+      }
+      const consents = settings.engineConsents.slice();
+      if (engine !== LOCAL_ENGINE && !consents.includes(engine)) {
+        if (message.consent !== true) throw codedError("consent_required", "이 번역 엔진의 전송 안내에 먼저 동의해 주세요.");
+        consents.push(engine);
+      }
+      await api.storage.local.set({ engine, engineConsents: consents });
+      // 엔진이 바뀌면 진행 중인 요청은 이전 엔진의 것이므로 모두 취소한다.
+      native.cancelAllTabs();
+      return { ok: true, page: await reconfigure(tabId, origin) };
+    }
+    case "revokeEngine": {
+      // 지금 고른 웹 번역 엔진의 동의를 철회하고 Mac 기본 번역으로 돌아간다.
+      const consents = settings.engineConsents.filter((engine) => engine !== message.engine);
+      await api.storage.local.set({ engine: LOCAL_ENGINE, engineConsents: consents });
+      native.cancelAllTabs();
       return { ok: true, page: await reconfigure(tabId, origin) };
     }
     case "setImages": {

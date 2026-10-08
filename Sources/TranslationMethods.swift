@@ -12,6 +12,7 @@ extension TranslationBackend {
         case .system: return "Mac 기본"
         case .intelligence: return "Apple AI 우선"
         case .chatgpt, .claude, .gemini: return title
+        case .deepl, .google, .papago: return webTranslator == .google ? "Google" : title
         }
     }
 
@@ -35,7 +36,7 @@ extension TranslationBackend {
     var strategy: TranslationSession.Strategy {
         switch self {
         case .intelligence: return .highFidelity
-        case .system, .chatgpt, .claude, .gemini: return .lowLatency
+        case .system, .chatgpt, .claude, .gemini, .deepl, .google, .papago: return .lowLatency
         }
     }
 }

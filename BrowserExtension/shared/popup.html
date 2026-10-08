@@ -14,20 +14,42 @@
   </header>
 
   <section id="consent" hidden>
-    <p>번역할 때 이 페이지의 글자와 보이는 탭 화면(이미지 글자 인식용)을 이 Mac의 SMT 앱으로만 보냅니다.
-      SMT는 Mac 기본 번역(기기 내)으로 번역하고 내용을 저장하지 않습니다. 외부 AI로 보내지 않습니다.</p>
+    <p>번역할 때 이 페이지의 글자와 보이는 탭 화면(이미지 글자 인식용)을 이 Mac의 SMT 앱으로 보냅니다.
+      기본값인 Mac 기본 번역은 기기 안에서 번역하고 내용을 저장하지 않으며 외부 AI로 보내지 않습니다.
+      Chrome·Whale에서 '번역 엔진'으로 DeepL·Google 번역·Papago를 따로 고르고 그 엔진에 동의한 경우에만,
+      SMT가 페이지 글자(이미지는 Mac에서 인식한 글자만)를 그 서비스의 공식 웹페이지로 보냅니다.</p>
     <button id="agree" class="primary">동의하고 사용</button>
   </section>
 
   <section id="main" hidden>
     <label class="row">번역 언어
-      <select id="target">
-        <option value="ko">한국어</option>
-        <option value="en">영어</option>
-        <option value="ja">일본어</option>
-        <option value="zh-Hans">중국어(간체)</option>
+      <span class="rowEnd">
+        <select id="target">
+          <option value="ko">한국어</option>
+          <option value="en">영어</option>
+          <option value="ja">일본어</option>
+          <option value="zh-Hans">중국어(간체)</option>
+          <option value="zh-Hant">중국어(번체)</option>
+        </select>
+        <a class="help" href="https://support.apple.com/ko-kr/guide/mac-help/mchldd8b3c15/mac" target="_blank" rel="noopener noreferrer" title="언어 팩 관리 안내">언어 팩 관리 안내</a>
+      </span>
+    </label>
+    <label class="row">번역 엔진
+      <select id="engineSelect">
+        <option value="apple">Mac 기본 번역(기기 내)</option>
+        <option value="deepl">DeepL 웹 · 외부 전송</option>
+        <option value="google">Google 번역 웹 · 외부 전송</option>
+        <option value="papago">Papago 웹 · 외부 전송</option>
       </select>
     </label>
+    <section id="engineConsent" class="engineConsent" hidden>
+      <p id="engineConsentText"></p>
+      <div class="buttons">
+        <button id="engineAgree" class="primary">동의하고 사용</button>
+        <button id="engineCancel">취소</button>
+      </div>
+    </section>
+    <p id="engineNote" class="auto" hidden></p>
     <div class="buttons">
       <button id="translate" class="primary">번역</button>
       <button id="original" title="원문 보기를 누르면 열려 있는 모든 탭에서 자동 번역이 꺼집니다.">원문 보기</button>
@@ -42,8 +64,9 @@
   </section>
 
   <p id="status" class="status"></p>
+  <p id="langStats" class="langStats" title="텍스트 조각·OCR 문단 기준" hidden></p>
   <p id="error" class="error" hidden></p>
-  <footer>Mac 기본 번역(기기 내) · SMT 앱의 번역 방식 설정과 별개</footer>
+  <footer id="footer">Mac 기본 번역(기기 내) · SMT 앱의 번역 방식 설정과 별개</footer>
   <script src="popup.js"></script>
 </body>
 </html>

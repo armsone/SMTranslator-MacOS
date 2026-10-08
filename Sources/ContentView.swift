@@ -53,14 +53,14 @@ struct ContentView: View {
         } message: {
             Text("원격 이미지를 불러오면 보낸 사람의 서버가 이 Mac의 IP 주소와 열람 시각을 알 수 있습니다(수신 확인 추적). 이 메시지에 한해 HTTPS 주소만, 쿠키와 캐시 없이 메모리로만 불러옵니다.")
         }
-        .alert(model.consentRequest.map { "\($0.provider.title)로 번역할까요?" } ?? "",
+        .alert(model.consentRequest.map { "\($0.service.title)로 번역할까요?" } ?? "",
                isPresented: Binding(get: { model.consentRequest != nil },
                                     set: { if !$0 { model.consentRequest = nil } }),
                presenting: model.consentRequest) { request in
             Button("동의하고 번역") { model.grantConsentAndTranslate(request) }
             Button("취소", role: .cancel) { model.consentRequest = nil }
         } message: { request in
-            Text(ExternalConsent.message(for: request.provider))
+            Text(request.service.consentMessage)
         }
         .task { await model.loadSupportedLanguages() }
     }
@@ -113,7 +113,11 @@ struct ContentView: View {
                         .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
                 }
                 Divider()
-                ForEach(TranslationBackend.allCases.filter(\.isExternal)) { backend in
+                ForEach(TranslationBackend.allCases.filter { $0.provider != nil }) { backend in
+                    Text("\(backend.title) — \(backend.detail)").tag(backend)
+                }
+                Divider()
+                ForEach(TranslationBackend.allCases.filter { $0.webTranslator != nil }) { backend in
                     Text("\(backend.title) — \(backend.detail)").tag(backend)
                 }
             }
@@ -122,7 +126,7 @@ struct ContentView: View {
             .help((TranslationBackend.intelligenceSupported
                   ? "번역 방식. 'Apple Intelligence 우선'은 Apple Intelligence가 켜져 있고 해당 언어를 지원하면 그 모델을 우선 쓰고, 사용할 수 없으면 Mac 기본 번역으로 처리합니다. 실제로 어느 모델이 쓰였는지는 시스템이 결정하며 앱에서 확인할 수 없습니다. 바꾸면 현재 본문과 이미지 글자를 다시 번역합니다."
                   : "Apple Intelligence 우선 번역은 macOS 26.4 이상에서만 선택할 수 있습니다.")
-                  + " ChatGPT·Claude·Gemini는 설정에서 로그인한 웹 계정으로 번역하며, 고르기만 해서는 메일을 보내지 않고 번역을 실행할 때만 제목·본문·이미지 글자를 보냅니다. 고른 방식은 다음 메일과 화면 번역에도 함께 쓰입니다.")
+                  + " ChatGPT·Claude·Gemini는 설정에서 로그인한 웹 계정으로, DeepL·Google 번역·Papago는 로그인 없이 공식 번역 웹페이지로 번역합니다. 고르기만 해서는 메일을 보내지 않고 번역을 실행할 때만 제목·본문·이미지 글자를 보냅니다. 고른 방식은 다음 메일과 화면 번역에도 함께 쓰입니다.")
         }
         ToolbarItem(id: "display", placement: .automatic) {
             Menu {
@@ -218,8 +222,8 @@ private struct StatusBar: View {
                 // 서식 본문의 텍스트를 아직 찾는 중이면 전체 진행률/완료를 표시하지 않는다.
                 ProgressView().controlSize(.small)
                 Text("원본 서식 본문 분석 중…")
-            } else if let provider = model.externalProvider {
-                externalStatus(provider, progress: p)
+            } else if let service = model.externalService {
+                externalStatus(service, progress: p)
             } else if p.pending > 0 && model.translationPhase == .preparing {
                 ProgressView().controlSize(.small)
                 Text("번역 준비 중… (언어 팩 확인)")
@@ -254,7 +258,8 @@ private struct StatusBar: View {
             }
             Text("· \(model.backend.title)")
                 .foregroundStyle(.secondary)
-                .help(model.backend.isExternal ? "\(model.backend.title) 웹 계정 — 외부 전송"
+                .help(model.backend.webTranslator != nil ? "\(model.backend.title) 공식 웹페이지 — 외부 전송"
+                      : model.backend.isExternal ? "\(model.backend.title) 웹 계정 — 외부 전송"
                       : model.backend == .intelligence ? "Apple Intelligence 우선 — AI 사용 불가 시 기본 번역" : "Mac 기본 번역")
             if model.sourceLanguageID == "auto", let key = model.documentLanguageKey {
                 Text("· 감지된 언어: \(AppModel.languageName(key))")
@@ -273,14 +278,17 @@ private struct StatusBar: View {
 
     /// 외부 AI 번역 상태: 실행 전 대기 · 진행(남은 시간·취소) · 실패(다시 시도·수동 진행·로그인 관리) · 완료
     @ViewBuilder
-    private func externalStatus(_ provider: AIProvider, progress p: (done: Int, failed: Int, pending: Int, total: Int)) -> some View {
+    private func externalStatus(_ service: ExternalService, progress p: (done: Int, failed: Int, pending: Int, total: Int)) -> some View {
+        let isAI: Bool = { if case .ai = service { return true } else { return false } }()
         switch model.externalPhase {
         case .running:
-            if let status = AIBIRunner.shared.status {
+            if isAI, let status = AIBIRunner.shared.status {
                 AIBIProgressRow(status: status)
+            } else if !isAI, let status = WebTranslatorRunner.shared.status, status.owner == .mail {
+                WebTranslatorProgressRow(status: status)
             } else {
                 ProgressView().controlSize(.small)
-                Text("\(provider.title) 준비 중")
+                Text(isAI ? "\(service.title) 준비 중" : "\(service.title) 차례 기다리는 중")
             }
             Text("(\(p.done + p.failed)/\(p.total))").foregroundStyle(.secondary)
             Button("취소") { model.cancelExternal() }
@@ -288,17 +296,20 @@ private struct StatusBar: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text(message).lineLimit(3).fixedSize(horizontal: false, vertical: true)
             Button("다시 시도") { model.requestExternalTranslation() }
-            Button("수동으로 진행") { model.startExternalManual() }
-                .help("공식 화면을 열고 요청 복사·응답 붙여넣기로 진행합니다(응답은 같은 형식 검증을 거칩니다)")
-            Button("로그인 관리") { MailWindowCoordinator.shared.showSettings() }
+            if isAI {
+                Button("수동으로 진행") { model.startExternalManual() }
+                    .help("공식 화면을 열고 요청 복사·응답 붙여넣기로 진행합니다(응답은 같은 형식 검증을 거칩니다)")
+                Button("로그인 관리") { MailWindowCoordinator.shared.showSettings() }
+            }
         case .idle, .awaitingAction:
             if p.pending > 0 {
                 Image(systemName: "paperplane").foregroundStyle(.secondary)
                 Text(p.done > 0 ? "\(p.pending)개 항목 남음" : "\(p.pending)개 항목 번역 대기")
-                Button(p.done > 0 ? "이어서 번역" : "\(provider.title)로 번역") { model.requestExternalTranslation() }
+                Button(p.done > 0 ? "이어서 번역" : "\(service.title)로 번역") { model.requestExternalTranslation() }
                     .buttonStyle(.borderedProminent)
-                    .help("실행하면 제목·본문 텍스트·이미지 글자(OCR)가 \(provider.title) 웹 계정 대화로 전송됩니다")
-                Button("로그인 관리") { MailWindowCoordinator.shared.showSettings() }
+                    .help(isAI ? "실행하면 제목·본문 텍스트·이미지 글자(OCR)가 \(service.title) 웹 계정 대화로 전송됩니다"
+                          : "실행하면 제목·본문 텍스트·이미지 글자(OCR)가 항목마다 \(service.title) 공식 웹페이지로 전송됩니다")
+                if isAI { Button("로그인 관리") { MailWindowCoordinator.shared.showSettings() } }
             } else if model.imageWorkInProgress {
                 ProgressView().controlSize(.small)
                 Text("이미지 처리 중… (본문 \(p.done + p.failed)/\(p.total))")
@@ -347,6 +358,8 @@ private struct EmptyStateView: View {
             Group {
                 if let provider = model.externalProvider {
                     Text("번역 방식: \(provider.title)(웹 로그인). 실행할 때만 메일 제목·본문·이미지 글자(OCR)가 전송됩니다. 메일 파일은 별도로 저장하지 않지만, AI 웹사이트의 캐시·대화 기록에는 남을 수 있습니다. 본문에 포함된 개인정보도 전송될 수 있습니다.")
+                } else if let translator = model.backend.webTranslator {
+                    Text("번역 방식: \(translator.title)(공식 웹페이지, 로그인 없음). 실행할 때만 메일 제목·본문·이미지 글자(OCR)가 항목마다 전송됩니다. 메일 파일은 별도로 저장하지 않지만, 번역 서비스 쪽에 기록될 수 있습니다. 본문에 포함된 개인정보도 전송될 수 있습니다.")
                 } else {
                     Text("번역과 글자 인식은 이 Mac 안에서 이루어지며, 메일 내용을 저장하거나 외부로 보내지 않습니다.")
                 }
@@ -406,7 +419,8 @@ private struct DocumentView: View {
 
     private var footer: some View {
         Text("원본 메일은 변경되지 않았습니다. 창을 닫으면 앱의 메모리에서 내용이 사라집니다."
-             + (model.backend.isExternal ? " 외부 AI로 이미 보낸 내용은 해당 서비스 대화 기록에 남을 수 있습니다." : ""))
+             + (model.backend.webTranslator != nil ? " 웹 번역기로 이미 보낸 내용은 해당 서비스에 기록될 수 있습니다."
+                : model.backend.isExternal ? " 외부 AI로 이미 보낸 내용은 해당 서비스 대화 기록에 남을 수 있습니다." : ""))
             .font(.caption)
             .foregroundStyle(.tertiary)
             .padding(.top, 16)
@@ -446,6 +460,8 @@ private struct DocumentView: View {
             }
             if let provider = model.externalProvider {
                 list.append("외부 AI 번역(\(provider.title)): 번역을 실행하면 제목·본문 텍스트·이미지 속 글자(OCR)가 로그인한 \(provider.title) 웹 계정 대화로 전송되어 그 대화 기록에 남을 수 있습니다. 원본 HTML·이미지 파일·주소 헤더는 보내지 않습니다.")
+            } else if let translator = model.backend.webTranslator {
+                list.append("웹 번역(\(translator.title)): 번역을 실행하면 제목·본문 텍스트·이미지 속 글자(OCR)가 항목마다 \(translator.title) 공식 웹페이지에 입력되어 번역되며, 서비스 쪽에 기록될 수 있습니다. 원본 HTML·이미지 파일·주소 헤더는 보내지 않습니다.")
             }
             if model.remoteAutoRequested {
                 list.append("요청한 메시지의 원격 이미지 \(model.remoteImageCount)개를 자동으로 불러왔습니다. 이미지 서버에 이 Mac의 IP 주소와 열람 시각이 전달될 수 있습니다. (HTTPS만, 쿠키·캐시 없이 메모리로만)")

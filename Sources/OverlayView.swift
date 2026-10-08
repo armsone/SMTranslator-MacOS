@@ -391,11 +391,13 @@ final class TitleDragStripView: NSView {
         closeButton.contentTintColor = NSColor(calibratedWhite: 0.85, alpha: 1)
         closeButton.toolTip = "창 숨기기 (Esc) — 메뉴 막대 아이콘이나 ⌃⌥⇧⌘T로 다시 열 수 있습니다"
 
-        primaryButton.bezelStyle = .inline
+        primaryButton.bezelStyle = .rounded
         primaryButton.controlSize = .mini
         primaryButton.font = .systemFont(ofSize: 10, weight: .semibold)
         primaryButton.imageScaling = .scaleProportionallyDown
         primaryButton.toolTip = "현재 영역을 한 번 캡처해 인식·번역합니다 (Space 또는 Enter)"
+        primaryButton.bezelColor = .systemBlue
+        primaryButton.contentTintColor = .white
 
         titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         titleLabel.textColor = NSColor(calibratedWhite: 0.92, alpha: 1)

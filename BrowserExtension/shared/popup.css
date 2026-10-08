@@ -7,6 +7,9 @@ header strong { flex: 1; }
 .pill.bad { background: rgba(255,59,48,.22); }
 section p { margin: 0 0 10px; line-height: 1.45; }
 .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.rowEnd { display: flex; align-items: center; gap: 6px; }
+.help { font-size: 11px; color: #0a84ff; text-decoration: none; white-space: nowrap; }
+.help:hover { text-decoration: underline; }
 .buttons { display: flex; gap: 6px; margin-bottom: 10px; }
 .buttons button { flex: 1; }
 button { padding: 5px 8px; font: inherit; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
@@ -16,5 +19,9 @@ button:disabled { opacity: .5; cursor: default; }
 .auto, .hint { margin: 0 0 10px; font-size: 12px; color: GrayText; }
 .hint { line-height: 1.4; }
 .status { margin: 10px 0 0; color: GrayText; min-height: 1em; }
+.langStats { margin: 4px 0 0; font-size: 12px; color: GrayText; }
 .error { margin: 6px 0 0; color: #ff453a; line-height: 1.4; }
 footer { margin-top: 10px; font-size: 11px; color: GrayText; }
+.engineConsent { margin: 0 0 10px; padding: 8px; border-radius: 6px; background: rgba(255,159,10,.14); }
+.engineConsent p { margin: 0 0 8px; font-size: 12px; line-height: 1.45; }
+.linkButton { border: none; padding: 0; color: #0a84ff; background: none; font-size: 12px; cursor: pointer; }

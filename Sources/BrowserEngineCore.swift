@@ -5,7 +5,8 @@ import Translation
 
 // 브라우저 번역 엔진(앱 본체와 Safari 확장 공용). 확장이 보낸 요청을 검증하고, 페이지 글자 조각과
 // 보이는 탭 캡처 중 이미지 영역만 잘라 OCR한 글자를 Mac 기본 번역(기기 내)으로 번역해 텍스트만 돌려준다.
-// - 브라우저 번역은 앱의 번역 방식 설정(외부 AI 포함)을 읽거나 바꾸지 않고 항상 Mac 기본 번역을 쓴다.
+// - 브라우저 번역은 앱의 번역 방식 설정(외부 AI 포함)을 읽거나 바꾸지 않는다. 기본은 Mac 기본 번역이며, 확장에서 사용자가
+//   웹 번역 엔진(DeepL·Google·Papago)을 따로 고르고 동의한 요청만 앱이 연결한 외부 번역기(external)로 넘긴다(Safari 확장에는 없음).
 // - 요청·응답 내용과 이미지는 메모리에서만 쓰고 디스크에 저장하거나 기록하지 않는다.
 // - 요청 ID는 연결(scope)마다 따로 관리해 한 브라우저의 취소가 다른 브라우저 요청을 건드리지 않는다.
 
@@ -18,6 +19,8 @@ enum BrowserEngineError: Error {
     case unsupportedPair(String)
     case requiresNewerMacOS
     case translationFailed(String)
+    case externalUnavailable
+    case externalBlocked(String)
 
     var code: String {
         switch self {
@@ -29,6 +32,8 @@ enum BrowserEngineError: Error {
         case .unsupportedPair: return "unsupported_language"
         case .requiresNewerMacOS: return "requires_macos26"
         case .translationFailed: return "translation_failed"
+        case .externalUnavailable: return "external_unavailable"
+        case .externalBlocked: return "external_consent_required"
         }
     }
 
@@ -43,6 +48,9 @@ enum BrowserEngineError: Error {
         case .unsupportedPair(let pair): return "Mac 기본 번역이 지원하지 않는 언어 조합입니다(\(pair))."
         case .requiresNewerMacOS: return "Safari 번역에는 macOS 26 이상이 필요합니다. Chrome·Whale 확장을 사용하세요."
         case .translationFailed(let reason): return "번역 실패: \(reason)"
+        case .externalUnavailable:
+            return "이 연결에서는 웹 번역(DeepL·Google·Papago)을 쓸 수 없습니다. Safari는 Mac 기본 번역만 지원합니다. 확장의 번역 엔진을 Mac 기본 번역으로 바꾸세요."
+        case .externalBlocked(let reason): return reason
         }
     }
 }
@@ -51,6 +59,22 @@ enum BrowserEngineError: Error {
 protocol BrowserTextTranslating: AnyObject, Sendable {
     func supportedLanguageIDs() async -> [String]
     func translate(_ texts: [String], source: String, target: String) async throws -> [String?]
+}
+
+/// 웹 번역 엔진(앱 본체 전용). 항목마다 하나씩 번역하며, 결과는 입력과 같은 개수이고 받지 못한 항목은 nil이다.
+/// 실행을 멈춰야 하는 오류는 그때까지 받은 결과와 함께 BrowserExternalFailure로 알린다.
+protocol BrowserExternalTranslating: AnyObject, Sendable {
+    var engineIDs: [String] { get }
+    /// 지금 보낼 수 없으면(앱 쪽 동의 없음 등) 사용자에게 보여줄 이유
+    func unavailableReason(engine: String) async -> String?
+    func translate(_ texts: [String], source: String, target: String, engine: String) async throws -> [String?]
+}
+
+struct BrowserExternalFailure: Error {
+    let results: [String?]
+    let message: String
+    /// true면 이 언어 조합만 실패(다른 언어 묶음은 계속)
+    let unsupported: Bool
 }
 
 /// 지원하지 않는 환경(예: macOS 26 미만의 Safari 확장)에서 쓰는 번역기. 항상 실행 가능한 안내 오류를 낸다.
@@ -85,13 +109,14 @@ private struct BrowserRawRequest: Decodable {
     let image: String?
     let viewport: BrowserViewportInput?
     let regions: [BrowserImageRegionInput]?
+    let engine: String?
 }
 
 enum BrowserRequest {
     case hello(id: String?)
     case cancel(id: String)
-    case translate(id: String, target: AppLanguage, texts: [String])
-    case ocr(id: String, target: AppLanguage, image: Data, viewport: CGSize, regions: [BrowserImageRegionInput])
+    case translate(id: String, target: AppLanguage, texts: [String], engine: String)
+    case ocr(id: String, target: AppLanguage, image: Data, viewport: CGSize, regions: [BrowserImageRegionInput], engine: String)
 
     static let maxTexts = 150
     static let maxTextLength = 5000
@@ -99,6 +124,12 @@ enum BrowserRequest {
     static let maxRegions = 16
     static let maxImagePixels = 60_000_000
     static let maxImageSide = 12_000
+    /// 기본 엔진(Mac 기본 번역). 확장이 engine을 보내지 않으면(구버전) 이 값이다.
+    static let localEngine = "apple"
+    static let externalEngines = ["deepl", "google", "papago"]
+    /// 웹 번역 엔진은 항목마다 차례로 처리하므로 한 요청을 작게 받는다.
+    static let maxExternalTexts = 12
+    static let maxExternalCharacters = 15_000
 
     static func parse(_ data: Data) throws -> BrowserRequest {
         let raw: BrowserRawRequest
@@ -116,14 +147,18 @@ enum BrowserRequest {
         case "translate":
             let id = try validID(raw.id)
             let target = try validTarget(raw.target)
-            guard let texts = raw.texts, !texts.isEmpty, texts.count <= maxTexts else { throw BrowserEngineError.badRequest("항목 수") }
+            let engine = try validEngine(raw.engine)
+            let external = engine != localEngine
+            guard let texts = raw.texts, !texts.isEmpty, texts.count <= (external ? maxExternalTexts : maxTexts) else {
+                throw BrowserEngineError.badRequest("항목 수")
+            }
             var total = 0
             for text in texts {
                 guard text.count <= maxTextLength else { throw BrowserEngineError.badRequest("항목 길이") }
                 total += text.count
             }
-            guard total <= maxTotalCharacters else { throw BrowserEngineError.badRequest("전체 길이") }
-            return .translate(id: id, target: target, texts: texts)
+            guard total <= (external ? maxExternalCharacters : maxTotalCharacters) else { throw BrowserEngineError.badRequest("전체 길이") }
+            return .translate(id: id, target: target, texts: texts, engine: engine)
         case "ocr":
             let id = try validID(raw.id)
             let target = try validTarget(raw.target)
@@ -145,7 +180,8 @@ enum BrowserRequest {
                   let bytes = Data(base64Encoded: String(image.dropFirst(prefix.count))) else {
                 throw BrowserEngineError.badRequest("이미지 형식")
             }
-            return .ocr(id: id, target: target, image: bytes, viewport: CGSize(width: viewport.w, height: viewport.h), regions: regions)
+            return .ocr(id: id, target: target, image: bytes, viewport: CGSize(width: viewport.w, height: viewport.h), regions: regions,
+                        engine: try validEngine(raw.engine))
         default:
             throw BrowserEngineError.badRequest("종류")
         }
@@ -160,6 +196,12 @@ enum BrowserRequest {
         !key.isEmpty && key.utf8.count <= 64
             && key.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "-_:.".unicodeScalars.contains($0) }
             && key.unicodeScalars.allSatisfy(\.isASCII)
+    }
+
+    private static func validEngine(_ engine: String?) throws -> String {
+        guard let engine else { return localEngine }
+        guard engine == localEngine || externalEngines.contains(engine) else { throw BrowserEngineError.badRequest("번역 엔진") }
+        return engine
     }
 
     private static func validTarget(_ target: String?) throws -> AppLanguage {
@@ -177,14 +219,19 @@ actor BrowserEngine {
     private static let maxTasksPerScope = 6
     private static let batchSize = 40
     private static let maxOCRItems = 300
+    /// 웹 번역 엔진으로 보내는 이미지 글자 상한(요청 하나). 넘는 조각은 번역하지 않는다.
+    private static let maxExternalOCRItems = 24
 
     private let translator: BrowserTextTranslating
+    private let external: BrowserExternalTranslating?
     private let isEnabled: @Sendable () async -> Bool
     private var tasks: [String: Task<Data, Never>] = [:]
     private var supportedIDs: [String]?
 
-    init(translator: BrowserTextTranslating, isEnabled: @escaping @Sendable () async -> Bool) {
+    init(translator: BrowserTextTranslating, external: BrowserExternalTranslating? = nil,
+         isEnabled: @escaping @Sendable () async -> Bool) {
         self.translator = translator
+        self.external = external
         self.isEnabled = isEnabled
     }
 
@@ -202,6 +249,7 @@ actor BrowserEngine {
             var response: [String: Any] = [
                 "type": "hello", "ok": true, "engine": Self.engineID, "engineTitle": Self.engineTitle,
                 "enabled": await isEnabled(),
+                "externalEngines": external?.engineIDs ?? [],
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
             ]
             if let id { response["id"] = id }
@@ -209,7 +257,7 @@ actor BrowserEngine {
         case .cancel(let id):
             tasks["\(scope)|\(id)"]?.cancel()
             return Self.encode(["type": "ack", "ok": true, "id": id])
-        case .translate(let id, _, _), .ocr(let id, _, _, _, _):
+        case .translate(let id, _, _, _), .ocr(let id, _, _, _, _, _):
             guard await isEnabled() else { return Self.encodeError(BrowserEngineError.disabled, id: id) }
             let key = "\(scope)|\(id)"
             tasks[key]?.cancel()
@@ -236,13 +284,19 @@ actor BrowserEngine {
         do {
             let response: [String: Any]
             switch request {
-            case .translate(_, let target, let texts):
-                let (results, missing) = try await translateTexts(texts, target: target)
-                response = ["type": "result", "ok": true, "id": id,
-                            "texts": results.map { $0.map { $0 as Any } ?? NSNull() }, "missing": missing]
-            case .ocr(_, let target, let image, let viewport, let regions):
-                let (images, missing) = try await recognizeAndTranslate(image, viewport: viewport, regions: regions, target: target)
-                response = ["type": "ocrResult", "ok": true, "id": id, "images": images, "missing": missing]
+            case .translate(_, let target, let texts, let engine):
+                let (results, missing, langs, warning) = try await translateTexts(texts, target: target, engine: engine)
+                var object: [String: Any] = ["type": "result", "ok": true, "id": id,
+                            "texts": results.map { $0.map { $0 as Any } ?? NSNull() }, "missing": missing,
+                            "langs": langs.map { $0.map { $0 as Any } ?? NSNull() }]
+                if let warning { object["warning"] = warning }
+                response = object
+            case .ocr(_, let target, let image, let viewport, let regions, let engine):
+                let (images, missing, warning) = try await recognizeAndTranslate(image, viewport: viewport, regions: regions,
+                                                                                 target: target, engine: engine)
+                var object: [String: Any] = ["type": "ocrResult", "ok": true, "id": id, "images": images, "missing": missing]
+                if let warning { object["warning"] = warning }
+                response = object
             default:
                 throw BrowserEngineError.badRequest("종류")
             }
@@ -264,16 +318,32 @@ actor BrowserEngine {
 
     /// 조각마다 언어를 판별해 같은 언어끼리 그 언어를 명시한 세션으로 번역한다(원문 언어가 nil인 세션을 쓰지 않아
     /// 언어 선택 창이 뜨지 않는다). 글자가 없거나 이미 번역 언어이거나 판별·지원되지 않는 조각은 nil(원문 유지).
-    private func translateTexts(_ texts: [String], target: AppLanguage) async throws -> ([String?], [String]) {
-        let detected = LanguageDetection.resolveAmbiguous(texts.map { LanguageDetection.classify($0) })
-        if supportedIDs == nil || supportedIDs?.isEmpty == true {
+    /// 세 번째 결과는 조각마다 실제로 쓴 판별 언어(글자 없음은 nil, 판별 못 하면 "unknown")로, 번역 성공 여부와 무관하게
+    /// 확장이 인식 통계를 보여주는 데 쓴다. 네 번째 결과는 웹 번역 엔진이 도중에 멈췄을 때의 안내(받은 결과는 유지)다.
+    /// 웹 번역 엔진도 같은 언어 판별을 거쳐, 판별한 언어를 원문 언어로 지정해 보낸다(판별 못 한 조각은 보내지 않는다).
+    private func translateTexts(_ texts: [String], target: AppLanguage, engine: String) async throws -> ([String?], [String], [String?], String?) {
+        let isExternal = engine != BrowserRequest.localEngine
+        if isExternal {
+            guard let external, external.engineIDs.contains(engine) else { throw BrowserEngineError.externalUnavailable }
+            if let reason = await external.unavailableReason(engine: engine) { throw BrowserEngineError.externalBlocked(reason) }
+        }
+        let classified = texts.map { LanguageDetection.classify($0) }
+        let detected = LanguageDetection.resolveAmbiguous(classified)
+        let langs: [String?] = detected.map { result in
+            switch result {
+            case .language(let key): return key
+            case .unknown: return "unknown"
+            case .noLetters, .ambiguous: return nil
+            }
+        }
+        if !isExternal && (supportedIDs == nil || supportedIDs?.isEmpty == true) {
             supportedIDs = await translator.supportedLanguageIDs()
         }
         var order: [String] = []
         var groups: [String: [Int]] = [:]
         for (index, result) in detected.enumerated() {
             guard case .language(let key) = result,
-                  !LanguageDetection.isSameLanguage(key, target.rawValue), isSupported(key) else { continue }
+                  !LanguageDetection.isSameLanguage(key, target.rawValue), isExternal || isSupported(key) else { continue }
             if groups[key] == nil { order.append(key) }
             groups[key, default: []].append(index)
         }
@@ -281,7 +351,8 @@ actor BrowserEngine {
         var results = [String?](repeating: nil, count: texts.count)
         var missing: [String] = []
         var firstError: Error?
-        for key in order {
+        var warning: String?
+        groups: for key in order {
             let indices = groups[key] ?? []
             var start = 0
             groupLoop: while start < indices.count {
@@ -289,10 +360,24 @@ actor BrowserEngine {
                 let chunk = Array(indices[start..<min(start + Self.batchSize, indices.count)])
                 start += Self.batchSize
                 do {
-                    let output = try await translator.translate(chunk.map { texts[$0] }, source: key, target: target.rawValue)
+                    let output: [String?]
+                    if isExternal, let external {
+                        output = try await external.translate(chunk.map { texts[$0] }, source: key, target: target.rawValue, engine: engine)
+                    } else {
+                        output = try await translator.translate(chunk.map { texts[$0] }, source: key, target: target.rawValue)
+                    }
                     for (offset, index) in chunk.enumerated() where offset < output.count {
                         results[index] = output[offset]
                     }
+                } catch let failure as BrowserExternalFailure {
+                    // 받은 결과는 유지한다. 언어 조합 실패는 그 묶음만, 그 밖의 실패는 남은 묶음을 보내지 않고 멈춘다.
+                    for (offset, index) in chunk.enumerated() where offset < failure.results.count {
+                        results[index] = failure.results[offset]
+                    }
+                    if warning == nil { warning = failure.message }
+                    if failure.unsupported { break groupLoop }
+                    if firstError == nil { firstError = BrowserEngineError.translationFailed(failure.message) }
+                    break groups
                 } catch BrowserEngineError.languageNotInstalled(let pair) {
                     missing.append(pair)
                     break groupLoop
@@ -312,7 +397,7 @@ actor BrowserEngine {
             if let firstError { throw firstError }
             if let pair = missing.first, missing.count == order.count { throw BrowserEngineError.languageNotInstalled(pair) }
         }
-        return (results, missing)
+        return (results, missing, langs, warning)
     }
 
     private func isSupported(_ key: String) -> Bool {
@@ -324,7 +409,8 @@ actor BrowserEngine {
 
     /// 보이는 탭 캡처에서 확장이 지정한 이미지 영역만 잘라 OCR하고, 번역된 조각의 위치(영역 기준 0...1)와 번역문만 돌려준다.
     private func recognizeAndTranslate(_ imageData: Data, viewport: CGSize, regions: [BrowserImageRegionInput],
-                                       target: AppLanguage) async throws -> ([[String: Any]], [String]) {
+                                       target: AppLanguage, engine: String) async throws -> ([[String: Any]], [String], String?) {
+        let itemLimit = engine == BrowserRequest.localEngine ? Self.maxOCRItems : Self.maxExternalOCRItems
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(imageData as CFData, options),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
@@ -353,7 +439,7 @@ actor BrowserEngine {
             guard !crop.isNull, crop.width >= 24, crop.height >= 24, let cropped = image.cropping(to: crop) else { continue }
             let recognized = try await ImageTextRecognizer.recognize(cropped, assetID: region.k)
             for item in recognized where item.hasMeaningfulLetters {
-                guard found.count < Self.maxOCRItems else { break }
+                guard found.count < itemLimit else { break }
                 // 잘라낸 픽셀 좌표 → 뷰포트 CSS 좌표 → 요청 영역 기준 0...1
                 let px = (crop.minX + item.box.minX * crop.width) / sx
                 let py = (crop.minY + item.box.minY * crop.height) / sy
@@ -367,8 +453,10 @@ actor BrowserEngine {
 
         var translated = [String?](repeating: nil, count: found.count)
         var missing: [String] = []
+        var langs = [String?](repeating: nil, count: found.count)
+        var warning: String?
         if !found.isEmpty {
-            (translated, missing) = try await translateTexts(found.map(\.text), target: target)
+            (translated, missing, langs, warning) = try await translateTexts(found.map(\.text), target: target, engine: engine)
         }
         func rounded(_ value: CGFloat) -> Double { (Double(value) * 10_000).rounded() / 10_000 }
         var itemsByKey: [String: [[String: Any]]] = [:]
@@ -380,8 +468,14 @@ actor BrowserEngine {
                 "t": text, "bg": item.bg, "fg": item.fg
             ])
         }
-        let images: [[String: Any]] = keys.map { ["k": $0, "items": itemsByKey[$0] ?? []] }
-        return (images, missing)
+        // 번역 성공 여부와 무관하게(건너뛴 조각 포함) 이미지마다 인식한 언어 개수를 센다.
+        var langCountsByKey: [String: [String: Int]] = [:]
+        for (item, lang) in zip(found, langs) {
+            guard let lang else { continue }
+            langCountsByKey[item.imageKey, default: [:]][lang, default: 0] += 1
+        }
+        let images: [[String: Any]] = keys.map { ["k": $0, "items": itemsByKey[$0] ?? [], "langs": langCountsByKey[$0] ?? [:]] }
+        return (images, missing, warning)
     }
 
     // MARK: 인코딩

@@ -8,6 +8,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     case english = "en"
     case japanese = "ja"
     case chineseSimplified = "zh-Hans"
+    case chineseTraditional = "zh-Hant"
     case korean = "ko"
 
     var id: String { rawValue }
@@ -17,6 +18,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .english: return "영어"
         case .japanese: return "일본어"
         case .chineseSimplified: return "중국어 (간체)"
+        case .chineseTraditional: return "중국어 (번체)"
         case .korean: return "한국어"
         }
     }
@@ -32,6 +34,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .english: return "en-US"
         case .japanese: return "ja-JP"
         case .chineseSimplified: return "zh-Hans"
+        case .chineseTraditional: return "zh-Hant"
         case .korean: return "ko-KR"
         }
     }
@@ -46,7 +49,7 @@ enum SourceSelection: Hashable, Identifiable {
     static let allCases: [SourceSelection] = [.automatic] + AppLanguage.allCases.map { .language($0) }
 
     /// 자동 인식 때 Vision OCR에 넘기는 우선순위 목록(기기가 지원하는 것만 걸러서 쓴다).
-    static let automaticRecognitionCodes = ["ja-JP", "en-US", "zh-Hans", "ko-KR"]
+    static let automaticRecognitionCodes = ["ja-JP", "en-US", "zh-Hans", "zh-Hant", "ko-KR"]
 
     var id: String { languageID }
 
@@ -255,6 +258,10 @@ enum LanguageDetection {
             // 한자만 있는 줄은 일본어·중국어를 가리기 어렵다. 길고 확실할 때만 정하고 나머지는 주변 줄에 맡긴다.
             let guess = hypothesis(sample, constraints: [.japanese, .simplifiedChinese, .traditionalChinese])
             if han >= 12, let guess, guess.confidence >= 0.8 { return .language(guess.key) }
+            // 짧아도(han>=4) 중국어로 매우 강하게 판별되면 같은 캡처의 일본어 다수 줄에 묻혀 지워지지 않도록
+            // 바로 확정한다(resolveAmbiguous의 일본어 전용 강한 문맥이 이 확정 줄을 덮어쓰지 않게 함).
+            if han >= 4, let guess, Locale.Language(identifier: guess.key).languageCode?.identifier == "zh",
+               guess.confidence >= 0.95 { return .language(guess.key) }
             return .ambiguous(.han, guess: (guess?.confidence ?? 0) >= 0.6 ? guess?.key : nil)
         }
         if latin >= other {

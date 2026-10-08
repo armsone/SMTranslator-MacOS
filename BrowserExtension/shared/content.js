@@ -3,7 +3,7 @@
 //   링크·버튼 등 요소는 그대로라 클릭·접근성이 유지된다.
 // - 이미지 속 글자는 보이는 이미지 영역만 캡처·OCR해 이미지 위에 클릭 통과(pointer-events: none) 덮개로 그린다.
 //   캡처 직전에는 기존 덮개를 숨겨 자기 번역을 다시 읽지 않는다. 결과가 오는 사이 스크롤·이동이 있었으면 버린다.
-// - 자동 번역은 전역 자동 번역이 켜져 있고 이 사이트 접근 권한이 있을 때만, 스크롤·변경이 멈추고 1초 뒤 보이는 부분만 번역한다.
+// - 자동 번역은 전역 자동 번역이 켜져 있고 이 사이트 접근 권한이 있을 때만, 스크롤·변경이 생기면 바로 보이는 부분만 번역한다.
 //   전역 자동 번역은 번역 버튼을 누를 때 켜지고, 원문 보기를 누르면 꺼진다(배경 스크립트가 auto 값을 내려준다).
 // - 결과는 항상 텍스트(textContent / nodeValue)로만 넣고 HTML로 해석하지 않는다. 번역 캐시는 메모리에만 둔다.
 (() => {
@@ -14,8 +14,12 @@
   globalThis.__smtWebTranslatorLoaded = true;
 
   const api = globalThis.browser ?? globalThis.chrome;
-  const IDLE_DELAY = 1000;
   const MAX_UNITS = 600;
+  // 웹 번역 엔진(DeepL·Google·Papago)은 SMT가 조각마다 차례로 공식 페이지에 넣으므로 한 번에 적게 보낸다.
+  const LOCAL_ENGINE = "apple";
+  const MAX_EXTERNAL_UNITS = 120;
+  const EXTERNAL_BATCH_TEXTS = 10;
+  const EXTERNAL_BATCH_CHARS = 12000;
   const MAX_WALK = 40000;
   const BATCH_TEXTS = 120;
   const BATCH_CHARS = 30000;
@@ -34,6 +38,7 @@
     auto: false,
     images: true,
     target: "ko",
+    engine: LOCAL_ENGINE,
     view: "translated",
     pageGen: 0,   // 이동·언어 변경 때 증가: 이전 결과 모두 무효
     scrollGen: 0, // 스크롤·크기 변경 때 증가: 이전 이미지 결과 무효
@@ -45,16 +50,16 @@
     timer: 0,
     status: "대기",
     error: "",
-    warning: "",
-    mutationBurst: 0,
-    mutationWindowStart: 0
+    warning: ""
   };
 
-  /** Text 노드 → { original, translated(null이면 원문 유지), target } */
+  /** Text 노드 → { original, translated(null이면 원문 유지), target(엔진|언어), lang(판별 언어 코드|"unknown"|null(글자없음)|생략(구버전 응답)) } */
   const records = new Map();
-  /** `${target}\u0001${원문}` → 번역문(null이면 번역하지 않음). 메모리 LRU */
+  /** `${엔진|언어}\u0001${원문}` → 번역문(null이면 번역하지 않음). 메모리 LRU */
   const cache = new Map();
-  /** img 요소 → { key, box, offX, offY, w, h, elemW, elemH } */
+  /** 원문(trim) → 판별 언어 코드|"unknown"|null. target과 무관하므로 cache와 별도 LRU로 둔다. */
+  const langCache = new Map();
+  /** img 요소 → { key, box, offX, offY, w, h, elemW, elemH, langs({언어코드|"unknown": 개수}) } */
   const imageRecords = new Map();
   let ocrInFlight = false;
 
@@ -75,8 +80,17 @@
     state.status = text;
   }
 
+  /** 번역 결과를 구분하는 기준: 엔진과 번역 언어가 모두 같아야 같은 결과다. */
+  function profile() {
+    return `${state.engine}|${state.target}`;
+  }
+
+  function isExternal() {
+    return state.engine !== LOCAL_ENGINE;
+  }
+
   function cacheKey(text) {
-    return `${state.target}\u0001${text}`;
+    return `${profile()}\u0001${text}`;
   }
 
   function cachePut(text, value) {
@@ -95,6 +109,21 @@
     return value;
   }
 
+  // 서버가 langs를 보내지 않으면(구버전) 아무 것도 기록하지 않아 통계를 지어내지 않는다.
+  function langPut(text, lang) {
+    langCache.delete(text);
+    langCache.set(text, lang);
+    while (langCache.size > CACHE_LIMIT) langCache.delete(langCache.keys().next().value);
+  }
+
+  function langGet(text) {
+    if (!langCache.has(text)) return undefined;
+    const value = langCache.get(text);
+    langCache.delete(text);
+    langCache.set(text, value);
+    return value;
+  }
+
   function nextFrames(count) {
     return new Promise((resolve) => {
       const step = (n) => (n <= 0 ? resolve() : requestAnimationFrame(() => step(n - 1)));
@@ -107,10 +136,20 @@
   let layerHost = null;
   let layerRoot = null;
 
+  // 전체화면(:fullscreen)에 들어간 요소는 UA가 그 요소에 position:fixed를 주어 새 포함 블록이 되므로,
+  // 덮개 호스트도 같은 요소 아래에 둬야 fixed 자식과 getBoundingClientRect() 좌표가 같은 기준으로 맞는다.
+  function fullscreenTarget() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
   function layer() {
-    if (layerHost && layerHost.isConnected) return layerRoot;
+    const parent = fullscreenTarget() || document.documentElement;
+    if (layerHost && layerHost.isConnected) {
+      if (layerHost.parentNode !== parent) parent.appendChild(layerHost);
+      return layerRoot;
+    }
     layerHost = document.createElement("smt-translator-layer");
-    layerHost.style.cssText = "all: initial; position: absolute; left: 0; top: 0; width: 0; height: 0; " +
+    layerHost.style.cssText = "all: initial; position: fixed; left: 0; top: 0; width: 0; height: 0; " +
       "z-index: 2147483647; pointer-events: none; contain: layout style;";
     layerRoot = layerHost.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
@@ -120,7 +159,7 @@
       "font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.15;white-space:normal;" +
       "word-break:keep-all;overflow-wrap:anywhere;padding:0 1px;border-radius:2px}";
     layerRoot.appendChild(style);
-    document.documentElement.appendChild(layerHost);
+    parent.appendChild(layerHost);
     applyLayerVisibility();
     return layerRoot;
   }
@@ -159,7 +198,7 @@
       const record = records.get(node);
       let source = value;
       if (record) {
-        if (record.target === state.target && (value === record.translated || (record.translated === null && value === record.original))) continue;
+        if (record.target === profile() && (value === record.translated || (record.translated === null && value === record.original))) continue;
         if (value === record.translated) source = record.original;
         else if (value !== record.original) records.delete(node);
       }
@@ -191,47 +230,57 @@
     while (records.size > RECORD_LIMIT) records.delete(records.keys().next().value);
   }
 
-  function applyUnit(unit, translatedTrimmed) {
+  function applyUnit(unit, translatedTrimmed, lang) {
     if (unit.node.nodeValue !== unit.value) return; // 그사이 페이지가 바꿨으면 건드리지 않는다
     const lead = unit.source.match(/^\s*/)[0];
     const trail = unit.source.match(/\s*$/)[0];
     const translated = typeof translatedTrimmed === "string" && translatedTrimmed.length > 0 ? lead + translatedTrimmed + trail : null;
-    records.set(unit.node, { original: unit.source, translated, target: state.target });
+    const record = { original: unit.source, translated, target: profile() };
+    if (lang !== undefined) record.lang = lang; // undefined면 그대로 두어(생략) 구버전 응답을 미판별로 둔갑시키지 않는다
+    records.set(unit.node, record);
     const want = state.view === "translated" && translated !== null ? translated : unit.source;
     if (unit.node.nodeValue !== want) unit.node.nodeValue = want;
   }
 
   async function translateTextPass(pageGen) {
     pruneRecords();
-    const units = collectUnits();
+    const units = isExternal() ? collectUnits().slice(0, MAX_EXTERNAL_UNITS) : collectUnits();
     const groups = new Map(); // 원문(trim) → [unit]
     for (const unit of units) {
       const cached = cacheGet(unit.trimmed);
       if (cached !== undefined) {
-        applyUnit(unit, cached);
+        applyUnit(unit, cached, langGet(unit.trimmed));
         continue;
       }
       if (!groups.has(unit.trimmed)) groups.set(unit.trimmed, []);
       groups.get(unit.trimmed).push(unit);
     }
     const texts = [...groups.keys()];
+    const engine = state.engine;
+    const maxTexts = isExternal() ? EXTERNAL_BATCH_TEXTS : BATCH_TEXTS;
+    const maxChars = isExternal() ? EXTERNAL_BATCH_CHARS : BATCH_CHARS;
     let start = 0;
     while (start < texts.length) {
       const batch = [];
       let chars = 0;
-      while (start < texts.length && batch.length < BATCH_TEXTS && (batch.length === 0 || chars + texts[start].length <= BATCH_CHARS)) {
+      while (start < texts.length && batch.length < maxTexts && (batch.length === 0 || chars + texts[start].length <= maxChars)) {
         chars += texts[start].length;
         batch.push(texts[start]);
         start += 1;
       }
       if (pageGen !== state.pageGen) return;
       const target = state.target;
-      const response = await send({ cmd: "translate", target, texts: batch });
-      if (pageGen !== state.pageGen || target !== state.target) return;
+      const response = await send({ cmd: "translate", target, engine, texts: batch });
+      if (pageGen !== state.pageGen || target !== state.target || engine !== state.engine) return;
       if (response.missing.length) state.warning = `언어 팩 필요: ${response.missing.join(", ")}`;
+      if (response.warning) state.warning = response.warning;
+      // langs는 입력과 같은 개수일 때만 쓴다(구버전 네이티브 앱이면 없음 → 언어 통계는 집계하지 않는다).
+      const langs = Array.isArray(response.langs) && response.langs.length === batch.length ? response.langs : null;
       response.texts.forEach((value, index) => {
         cachePut(batch[index], value);
-        for (const unit of groups.get(batch[index]) || []) applyUnit(unit, value);
+        const lang = langs ? langs[index] : undefined;
+        if (langs) langPut(batch[index], lang);
+        for (const unit of groups.get(batch[index]) || []) applyUnit(unit, value, lang);
       });
     }
   }
@@ -239,7 +288,7 @@
   // MARK: 이미지 OCR
 
   function imageKey(img) {
-    return `${state.target}|${img.currentSrc || img.src}`;
+    return `${profile()}|${img.currentSrc || img.src}`;
   }
 
   /** 기존 덮개 위치를 이미지 현재 위치에 맞추고, 크기가 바뀌었거나 사라진 이미지 덮개는 지운다. */
@@ -252,8 +301,8 @@
         imageRecords.delete(img);
         continue;
       }
-      record.box.style.left = `${rect.left + scrollX + record.offX}px`;
-      record.box.style.top = `${rect.top + scrollY + record.offY}px`;
+      record.box.style.left = `${rect.left + record.offX}px`;
+      record.box.style.top = `${rect.top + record.offY}px`;
       record.box.style.display = "";
     }
   }
@@ -284,15 +333,15 @@
     return list.sort((a, b) => b.area - a.area).slice(0, MAX_IMAGES);
   }
 
-  function renderImage(candidate, items, sx, sy) {
+  function renderImage(candidate, items, langs) {
     const { img, rect, clip } = candidate;
     const previous = imageRecords.get(img);
     if (previous) previous.box.remove();
     const root = layer();
     const box = document.createElement("div");
     box.className = "img";
-    box.style.left = `${clip.x + sx}px`;
-    box.style.top = `${clip.y + sy}px`;
+    box.style.left = `${clip.x}px`;
+    box.style.top = `${clip.y}px`;
     box.style.width = `${clip.w}px`;
     box.style.height = `${clip.h}px`;
     root.appendChild(box);
@@ -317,7 +366,8 @@
     imageRecords.set(img, {
       key: imageKey(img), box,
       offX: clip.x - rect.left, offY: clip.y - rect.top, w: clip.w, h: clip.h,
-      elemW: rect.width, elemH: rect.height
+      elemW: rect.width, elemH: rect.height,
+      langs: langs && typeof langs === "object" ? langs : undefined // 구버전 응답이면 생략: 미판별로 둔갑시키지 않는다
     });
   }
 
@@ -332,6 +382,7 @@
     const viewport = { w: innerWidth, h: innerHeight };
     const regions = candidates.map((c, index) => ({ k: `i${index}`, x: c.clip.x, y: c.clip.y, w: c.clip.w, h: c.clip.h }));
     const target = state.target;
+    const engine = state.engine;
 
     ocrInFlight = true;
     try {
@@ -345,16 +396,17 @@
         applyLayerVisibility();
       }
       if (scrollGen !== state.scrollGen || pageGen !== state.pageGen || scrollX !== sx || scrollY !== sy) return;
-      const response = await send({ cmd: "ocr", captureId: capture.captureId, target, viewport, regions });
-      // 결과가 오는 사이 스크롤·이동·언어 변경이 있었으면 위치가 맞지 않으므로 버린다.
-      if (scrollGen !== state.scrollGen || pageGen !== state.pageGen || target !== state.target ||
+      const response = await send({ cmd: "ocr", captureId: capture.captureId, target, engine, viewport, regions });
+      // 결과가 오는 사이 스크롤·이동·언어·엔진 변경이 있었으면 위치가 맞지 않으므로 버린다.
+      if (scrollGen !== state.scrollGen || pageGen !== state.pageGen || target !== state.target || engine !== state.engine ||
           scrollX !== sx || scrollY !== sy) return;
       if (response.missing.length) state.warning = `언어 팩 필요: ${response.missing.join(", ")}`;
+      if (response.warning) state.warning = response.warning;
       for (const image of response.images) {
         const index = Number(String(image.k).slice(1));
         const candidate = candidates[index];
         if (!candidate || `i${index}` !== image.k || !candidate.img.isConnected) continue;
-        renderImage(candidate, image.items, sx, sy);
+        renderImage(candidate, image.items, image.langs);
       }
     } finally {
       ocrInFlight = false;
@@ -414,9 +466,14 @@
     }
   }
 
-  function schedule(delay = IDLE_DELAY) {
-    clearTimeout(state.timer);
-    state.timer = setTimeout(() => runPass(false), delay);
+  // 이미 대기 중인 실행이 있으면 다시 걸지 않는다(0ms 타이머를 계속 되돌려 끝없이 미루는 일을 막는다).
+  // 실제 통과 중이면 runPass가 rerun 표시로 알아서 이어받으므로 여러 번 걸어도 안전하다.
+  function schedule() {
+    if (state.timer) return;
+    state.timer = setTimeout(() => {
+      state.timer = 0;
+      runPass(false);
+    }, 0);
   }
 
   function setView(view) {
@@ -454,14 +511,7 @@
   let observing = false;
 
   function onPageChanged() {
-    // 계속 바뀌는 페이지(시계·티커 등)는 10초에 8번 넘게 바뀌면 5초 간격으로 늦춘다.
-    const now = Date.now();
-    if (now - state.mutationWindowStart > 10000) {
-      state.mutationWindowStart = now;
-      state.mutationBurst = 0;
-    }
-    state.mutationBurst += 1;
-    schedule(state.mutationBurst > 8 ? 5000 : IDLE_DELAY);
+    schedule();
   }
 
   function setObserving(on) {
@@ -489,9 +539,27 @@
     if (state.auto && state.view === "translated") schedule();
   }
 
+  // 전체화면 들어가기/나가기: 좌표 기준(뷰포트 또는 전체화면 요소)이 바뀌므로 덮개 호스트를 그 아래로 옮기고,
+  // 진행 중이던 캡처는 좌표가 안 맞을 것이므로 세대를 올려(스스로 무효화) 취소한다. 다음 통과에서 다시 잰다.
+  function onFullscreenChange() {
+    if (layerHost) {
+      const parent = fullscreenTarget() || document.documentElement;
+      if (layerHost.parentNode !== parent) parent.appendChild(layerHost);
+    }
+    state.scrollGen += 1;
+    if (ocrInFlight) send({ cmd: "cancel", kind: "ocr" }).catch(() => {});
+    for (const record of imageRecords.values()) record.box.style.display = "none";
+    if (state.auto && state.view === "translated") schedule();
+  }
+
   addEventListener("scroll", onScroll, { passive: true, capture: true });
   addEventListener("resize", onScroll, { passive: true });
-  addEventListener("popstate", () => checkNavigation());
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  document.addEventListener("webkitfullscreenchange", onFullscreenChange);
+  addEventListener("popstate", () => {
+    checkNavigation();
+    if (state.auto && state.view === "translated") schedule();
+  });
   addEventListener("pagehide", () => send({ cmd: "cancel" }).catch(() => {}));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
@@ -503,12 +571,32 @@
 
   // MARK: 확장 메시지
 
+  // 텍스트 조각(레코드)과 OCR 문단(이미지 레코드)에 남아 있는 판별 언어만 센다. 글자 없음(null)·구버전 응답(생략)은
+  // 집계하지 않아(거짓으로 채우지 않음) langCounts가 비면 null을 돌려준다.
   function snapshot() {
     let translated = 0;
-    for (const record of records.values()) if (record.translated !== null) translated += 1;
+    const langCounts = {};
+    let hasLangData = false;
+    for (const record of records.values()) {
+      if (record.translated !== null) translated += 1;
+      if (record.lang) {
+        hasLangData = true;
+        langCounts[record.lang] = (langCounts[record.lang] || 0) + 1;
+      }
+    }
+    for (const record of imageRecords.values()) {
+      if (!record.langs) continue;
+      for (const [lang, count] of Object.entries(record.langs)) {
+        const n = Number(count);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        hasLangData = true;
+        langCounts[lang] = (langCounts[lang] || 0) + n;
+      }
+    }
     return {
-      ok: true, view: state.view, auto: state.auto, images: state.images, target: state.target,
-      status: state.status, error: state.error, warning: state.warning, translated, imageCount: imageRecords.size
+      ok: true, view: state.view, auto: state.auto, images: state.images, target: state.target, engine: state.engine,
+      status: state.status, error: state.error, warning: state.warning, translated, imageCount: imageRecords.size,
+      langCounts: hasLangData ? langCounts : null
     };
   }
 
@@ -522,10 +610,12 @@
           return false;
         }
         const targetChanged = typeof message.target === "string" && message.target !== state.target;
+        const engineChanged = typeof message.engine === "string" && message.engine !== state.engine;
         state.auto = message.auto === true;
         state.images = message.images !== false;
-        if (targetChanged) {
-          state.target = message.target;
+        if (targetChanged || engineChanged) {
+          if (targetChanged) state.target = message.target;
+          if (engineChanged) state.engine = message.engine;
           state.pageGen += 1;
           state.warning = "";
           clearImageOverlays();
@@ -535,9 +625,10 @@
         if (message.translateNow === true) {
           setView("translated");
           clearTimeout(state.timer);
+          state.timer = 0;
           runPass(true);
         } else if (state.auto && state.view === "translated") {
-          schedule(targetChanged ? 0 : IDLE_DELAY);
+          schedule();
         }
         sendResponse(snapshot());
         return false;
@@ -552,6 +643,7 @@
         state.rerunManual = false;
         setObserving(false);
         clearTimeout(state.timer);
+        state.timer = 0;
         state.pageGen += 1;
         state.scrollGen += 1;
         setView("original");

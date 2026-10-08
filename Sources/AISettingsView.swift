@@ -5,6 +5,8 @@ import SwiftUI
 
 struct AISettingsView: View {
     @State private var accounts = AIBIAccounts.shared
+    @State private var webConsents = WebTranslatorConsentStore.shared
+    @State private var webConsentRequest: WebTranslator?
     @ObservedObject private var diagnostics = AIBIDiagnosticsStore.shared
     @State private var methods = TranslationBackendStore.shared
     @State private var dockVisibility = DockVisibilityStore.shared
@@ -21,14 +23,18 @@ struct AISettingsView: View {
                             .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
                     }
                     Divider()
-                    ForEach(TranslationBackend.allCases.filter(\.isExternal)) { backend in
+                    ForEach(TranslationBackend.allCases.filter { $0.provider != nil }) { backend in
+                        Text("\(backend.title) — \(backend.detail)").tag(backend)
+                    }
+                    Divider()
+                    ForEach(TranslationBackend.allCases.filter { $0.webTranslator != nil }) { backend in
                         Text("\(backend.title) — \(backend.detail)").tag(backend)
                     }
                 }
             } header: {
                 Text("번역 방식")
             } footer: {
-                Text("화면 번역과 메일 번역이 같은 방식을 씁니다. 기본값은 Mac 기본 번역입니다. Apple Intelligence 우선은 macOS 26.4 이상에서만 고를 수 있습니다. ChatGPT·Claude·Gemini는 고르기만 해서는 아무것도 보내지 않으며, 번역을 실행할 때만 텍스트를 보냅니다. 다른 방식으로 자동 대체하지 않습니다.")
+                Text("화면 번역과 메일 번역이 같은 방식을 씁니다. 기본값은 Mac 기본 번역입니다. Apple Intelligence 우선은 macOS 26.4 이상에서만 고를 수 있습니다. ChatGPT·Claude·Gemini(웹 계정)와 DeepL·Google 번역·Papago(공식 웹페이지, 로그인 없음)는 고르기만 해서는 아무것도 보내지 않으며, 번역을 실행할 때만 텍스트를 보냅니다. 다른 방식으로 자동 대체하지 않습니다.")
             }
 
             Section {
@@ -102,12 +108,32 @@ struct AISettingsView: View {
             }
 
             Section {
-                Button("외부 AI 로그인 세션 모두 지우기…", role: .destructive) { confirmClear = true }
+                ForEach(WebTranslator.allCases) { translator in
+                    HStack {
+                        Text(translator.title).frame(width: 90, alignment: .leading)
+                        Text(webConsents.hasConsent(translator) ? "동의함" : "아직 동의하지 않음")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if webConsents.hasConsent(translator) {
+                            Button("동의 철회") { webConsents.revoke(translator) }
+                        } else {
+                            Button("동의…") { webConsentRequest = translator }
+                        }
+                    }
+                }
+            } header: {
+                Text("웹 번역 전송 동의")
+            } footer: {
+                Text("DeepL·Google 번역·Papago는 API 키 없이 각 서비스의 공식 번역 웹페이지에 항목을 하나씩 입력해 번역합니다. 동의한 서비스만 메일·화면 번역 실행 때, 그리고 브라우저 확장(Chrome·Whale)에서 그 서비스를 따로 골라 동의한 경우에만 텍스트를 보냅니다. 페이지에 쿠키 동의·보안 확인이 나타나면 창을 띄워 직접 확인하게 하며, 앱이 대신 누르거나 우회하지 않습니다. 철회하면 진행 중인 웹 번역을 멈춥니다.")
+            }
+
+            Section {
+                Button("외부 AI·웹 번역 세션 모두 지우기…", role: .destructive) { confirmClear = true }
                     .disabled(accounts.isClearing)
             } header: {
                 Text("세션")
             } footer: {
-                Text("이 앱의 외부 AI 브라우저에 저장된 쿠키·로그인 정보를 모두 지웁니다(Safari, 다른 앱, 메일 서식 보기에는 영향 없음). 지운 뒤 각 제공사는 '로그인 필요'로 표시되며 '로그인…'으로 다시 로그인할 수 있습니다.")
+                Text("이 앱의 외부 AI와 웹 번역기(DeepL·Google 번역·Papago)가 함께 쓰는 저장소의 쿠키·로그인 정보를 모두 지웁니다(Safari, 다른 앱, 메일 서식 보기에는 영향 없음). 진행 중인 웹 번역도 함께 취소됩니다. 지운 뒤 각 외부 AI 제공사는 '로그인 필요'로 표시되며 '로그인…'으로 다시 로그인할 수 있습니다. 웹 번역기는 로그인이 필요하지 않습니다.")
             }
 
             Section {
@@ -129,12 +155,20 @@ struct AISettingsView: View {
         .frame(width: 560)
         .frame(minHeight: 620)
         .aibiHiddenSurface()
-        .confirmationDialog("외부 AI 로그인 세션을 모두 지울까요?", isPresented: $confirmClear) {
+        .confirmationDialog("외부 AI·웹 번역 세션을 모두 지울까요?", isPresented: $confirmClear) {
             Button("모두 지우기", role: .destructive) {
                 Task { await accounts.clearAllSessions() }
             }
         } message: {
-            Text("ChatGPT·Claude·Gemini 모두 다시 로그인해야 합니다. 진행 중인 외부 AI 번역은 취소됩니다.")
+            Text("ChatGPT·Claude·Gemini 모두 다시 로그인해야 합니다. 진행 중인 외부 AI 번역과 웹 번역(DeepL·Google 번역·Papago)이 모두 취소됩니다.")
+        }
+        .alert(webConsentRequest.map { "\($0.title) 전송에 동의할까요?" } ?? "",
+               isPresented: Binding(get: { webConsentRequest != nil }, set: { if !$0 { webConsentRequest = nil } }),
+               presenting: webConsentRequest) { translator in
+            Button("동의") { webConsents.grant(translator) }
+            Button("취소", role: .cancel) {}
+        } message: { translator in
+            Text(WebTranslatorConsentStore.message(for: translator))
         }
         .onAppear {
             mailButtonEnabled = MailToolbarButton.shared.isEnabled

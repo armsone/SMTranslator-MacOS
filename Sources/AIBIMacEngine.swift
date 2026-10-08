@@ -1392,6 +1392,7 @@ final class AIBIAccounts {
     /// 이 앱의 기본 웹 저장소(외부 AI 로그인 전용)를 모두 지운다. 메일 서식 보기는 비영구 저장소라 영향이 없다.
     func clearAllSessions() async {
         AIBIRunner.shared.cancel()
+        WebTranslatorRunner.shared.cancelAll()
         loginGeneration += 1
         closeLogin()
         isClearing = true

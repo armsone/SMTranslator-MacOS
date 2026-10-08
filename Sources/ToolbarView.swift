@@ -47,19 +47,25 @@ struct ToolbarView: View {
                             .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
                     }
                     Divider()
-                    ForEach(TranslationBackend.allCases.filter(\.isExternal)) { backend in
+                    ForEach(TranslationBackend.allCases.filter { $0.provider != nil }) { backend in
+                        Text("\(backend.title) — \(backend.detail)").tag(backend)
+                    }
+                    Divider()
+                    ForEach(TranslationBackend.allCases.filter { $0.webTranslator != nil }) { backend in
                         Text("\(backend.title) — \(backend.detail)").tag(backend)
                     }
                 }
                 .pickerStyle(.inline)
                 Divider()
-                Button("외부 AI 로그인·설정…") { MailWindowCoordinator.shared.showSettings() }
+                Button("외부 AI·웹 번역 설정…") { MailWindowCoordinator.shared.showSettings() }
             } label: {
                 Text(methods.backend.shortTitle)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help(methods.backend.isExternal
+            .help(methods.backend.webTranslator != nil
+                  ? "번역 방식: \(methods.backend.title) 공식 웹페이지(로그인 없음). 고르기만 해서는 보내지 않으며, 번역을 누를 때만 이 영역에서 인식한 글자를 한 줄씩 보냅니다. 스크린샷 이미지는 보내지 않습니다. 메일 번역과 같은 방식을 씁니다."
+                  : methods.backend.isExternal
                   ? "번역 방식: \(methods.backend.title) 웹 계정. 고르기만 해서는 보내지 않으며, 번역을 누를 때만 이 영역에서 인식한 글자(텍스트)를 보냅니다. 스크린샷 이미지는 보내지 않습니다. 메일 번역과 같은 방식을 씁니다."
                   : "번역 방식: \(methods.backend.title). 이 Mac 안에서 번역합니다. 메일 번역과 같은 방식을 씁니다.")
 

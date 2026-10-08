@@ -59,13 +59,14 @@ enum ExternalPhase: Equatable {
 
 /// 전송 동의 대화상자 요청. 요청한 문서에만 묶여, 문서가 바뀌면 그 문서를 승인하지 않는다.
 struct ExternalConsentRequest: Equatable {
-    let provider: AIProvider
+    let service: ExternalService
     let documentID: UUID
 }
 
 /// 번역 방식(메일·화면 번역 공용). system/intelligence는 Apple Translation 프레임워크(기기 내)이며 외부 서비스·키를 쓰지 않는다.
 /// Apple Intelligence 우선은 '선호'일 뿐이며, 실제로 어느 모델이 쓰였는지는 시스템이 결정하고 앱에서 확인할 수 없다.
 /// chatgpt/claude/gemini는 사용자의 웹 계정 로그인 세션(AIBI)으로 번역하며 API 키를 쓰지 않는다.
+/// deepl/google/papago는 각 서비스의 공식 번역 웹페이지(로그인 없음)에 항목마다 입력해 번역하며 API 키를 쓰지 않는다.
 /// 외부 방식은 사용자가 번역을 실행할 때만 텍스트(메일: 제목·본문·이미지 OCR, 화면: 인식한 글자)를 해당 서비스로 보낸다.
 enum TranslationBackend: String, CaseIterable, Identifiable {
     case system          // TranslationSession.Strategy.lowLatency
@@ -73,17 +74,29 @@ enum TranslationBackend: String, CaseIterable, Identifiable {
     case chatgpt
     case claude
     case gemini
+    case deepl
+    case google
+    case papago
 
     var id: Self { self }
 
+    /// 외부 AI(웹 계정) 제공사. 웹 번역기와 Apple 번역은 nil.
     var provider: AIProvider? { AIProvider(rawValue: rawValue) }
-    var isExternal: Bool { provider != nil }
+    var webTranslator: WebTranslator? { WebTranslator(rawValue: rawValue) }
+    var isExternal: Bool { provider != nil || webTranslator != nil }
+
+    var externalService: ExternalService? {
+        if let provider { return .ai(provider) }
+        if let webTranslator { return .web(webTranslator) }
+        return nil
+    }
 
     var title: String {
         switch self {
         case .system: return "Mac 기본 번역"
         case .intelligence: return "Apple Intelligence 우선"
         case .chatgpt, .claude, .gemini: return provider?.title ?? rawValue
+        case .deepl, .google, .papago: return webTranslator?.title ?? rawValue
         }
     }
 
@@ -92,6 +105,7 @@ enum TranslationBackend: String, CaseIterable, Identifiable {
         case .system: return "기존 Mac 기기 내 번역 모델"
         case .intelligence: return "AI 사용 불가 시 기본 번역"
         case .chatgpt, .claude, .gemini: return "웹 로그인 · 실행 시 외부 전송"
+        case .deepl, .google, .papago: return "공식 웹페이지 · 실행 시 외부 전송"
         }
     }
 
@@ -204,6 +218,8 @@ final class AppModel {
     /// 현재 메일을 외부 AI로 보내도 되는지(사용자가 이 메일에 대해 번역을 실행했거나 메일 요청 시 동의가 기억된 경우)
     @ObservationIgnored private var externalAuthorizedDocument: UUID?
     @ObservationIgnored private var externalBatchesInAction = 0
+    /// 웹 번역기로 이번 실행에서 보낸 항목 수(WebTranslation.itemsPerAction까지)
+    @ObservationIgnored private var webItemsInAction = 0
     @ObservationIgnored private var externalTask: Task<Void, Never>?
     @ObservationIgnored private var externalBatch: ExternalBatch?
     /// 누락된 항목만 같은 제공사에 한 번 더 요청한다. 완료 항목은 다시 보내지 않는다.
@@ -377,6 +393,7 @@ final class AppModel {
         // 문서 표시와 외부 전송 실행은 분리한다. 저장된 동의만으로 새 문서를 전송하지 않는다.
         externalPhase = .idle
         externalBatchesInAction = 0
+        webItemsInAction = 0
         externalAuthorizedDocument = nil
         if doc.formattedHTML != nil { prepareFormattedBody() }
         computeDocumentLanguage(doc)
@@ -469,6 +486,7 @@ final class AppModel {
             externalTask?.cancel()
             externalTask = nil
             AIBIRunner.shared.cancel(owner: .mail)
+            WebTranslatorRunner.shared.cancel(owner: .mail)
         }
         externalBatch = nil
         externalPhase = .idle
@@ -492,6 +510,7 @@ final class AppModel {
         cancelTranslationRun()
         if !keepExternalAuthorization { externalAuthorizedDocument = nil }
         externalBatchesInAction = 0
+        webItemsInAction = 0
         if backend.isExternal {
             translationConfig = nil
             configBackend = nil
@@ -764,6 +783,7 @@ final class AppModel {
     // MARK: - 외부 AI 번역 (웹 로그인 · AIBI)
 
     var externalProvider: AIProvider? { backend.provider }
+    var externalService: ExternalService? { backend.externalService }
 
     var externalPendingCount: Int {
         segmentStates.values.filter { if case .pending = $0 { return true } else { return false } }.count
@@ -777,9 +797,9 @@ final class AppModel {
 
     /// 상태 표시줄의 번역 실행 버튼. 처음 쓰는 제공사면 전송 동의부터 묻는다.
     func requestExternalTranslation() {
-        guard let provider = externalProvider, let doc = document else { return }
-        guard AIBIAccounts.shared.hasConsent(provider) else {
-            consentRequest = ExternalConsentRequest(provider: provider, documentID: doc.id)
+        guard let service = externalService, let doc = document else { return }
+        guard service.hasConsent else {
+            consentRequest = ExternalConsentRequest(service: service, documentID: doc.id)
             return
         }
         authorizeExternal()
@@ -790,8 +810,8 @@ final class AppModel {
         // 경고창이 닫히며 바인딩이 먼저 nil이 될 수 있으므로 표시 중 여부가 아니라 문서 ID로 확인한다.
         consentRequest = nil
         guard document?.id == request.documentID else { return }
-        AIBIAccounts.shared.grantConsent(request.provider)
-        guard externalProvider == request.provider else { return }
+        request.service.grantConsent()
+        guard externalService == request.service else { return }
         authorizeExternal()
     }
 
@@ -810,7 +830,7 @@ final class AppModel {
     func startExternalManual() {
         guard let provider = externalProvider, let doc = document else { return }
         guard AIBIAccounts.shared.hasConsent(provider) else {
-            consentRequest = ExternalConsentRequest(provider: provider, documentID: doc.id)
+            consentRequest = ExternalConsentRequest(service: .ai(provider), documentID: doc.id)
             return
         }
         authorizeExternal(manual: true)
@@ -824,6 +844,7 @@ final class AppModel {
         externalTask = nil
         externalBatch = nil
         AIBIRunner.shared.cancel(owner: .mail)
+        WebTranslatorRunner.shared.cancel(owner: .mail)
         externalMissingAttempts.removeAll()
         externalServiceRetryCount = 0
         externalFormatRetryCount = 0
@@ -834,6 +855,7 @@ final class AppModel {
         guard let doc = document else { return }
         externalAuthorizedDocument = doc.id
         externalBatchesInAction = 0
+        webItemsInAction = 0
         externalMissingAttempts.removeAll()
         externalServiceRetryCount = 0
         externalFormatRetryCount = 0
@@ -844,12 +866,15 @@ final class AppModel {
     /// 대기 항목이 있고 이 메일에 대한 실행이 허락되었을 때만 다음 묶음을 보낸다.
     /// 실행 중에 OCR로 새 항목이 생기면 지금 묶음이 끝난 뒤 이어서 보낸다(완료된 항목은 다시 보내지 않음).
     private func scheduleExternal(manual: Bool = false) {
-        guard let provider = externalProvider, let doc = document, externalTask == nil else { return }
+        guard let service = externalService, let doc = document, externalTask == nil else { return }
         if case .failed = externalPhase { return }
         // 한 묶음 상한보다 긴 단락은 보내지 않고 이유를 표시한다(자르거나 다른 방식으로 대체하지 않음).
-        for (id, state) in segmentStates {
-            if case .pending = state, let text = segments[id]?.text, text.count > ExternalTranslation.maxBatchCharacters {
-                segmentStates[id] = .failed(ExternalTranslation.tooLongMessage)
+        // 웹 번역기는 항목마다 따로 보내며 긴 단락은 문장 단위로 나눠 순서대로 이어 붙인다.
+        if case .ai = service {
+            for (id, state) in segmentStates {
+                if case .pending = state, let text = segments[id]?.text, text.count > ExternalTranslation.maxBatchCharacters {
+                    segmentStates[id] = .failed(ExternalTranslation.tooLongMessage)
+                }
             }
         }
         guard externalPendingCount > 0 else {
@@ -862,6 +887,10 @@ final class AppModel {
         }
         // 서식 본문의 텍스트 단위를 아직 찾는 중이면 끝난 뒤(htmlSegmentsExtracted) 보낸다.
         guard !formattedBodyPending else { return }
+        guard case .ai(let provider) = service else {
+            if case .web(let translator) = service { runWebExternal(translator) }
+            return
+        }
         guard externalBatchesInAction < ExternalTranslation.batchesPerAction else {
             externalAuthorizedDocument = nil
             externalPhase = .awaitingAction
@@ -926,6 +955,62 @@ final class AppModel {
                 self.externalAuthorizedDocument = nil
                 self.externalPhase = .awaitingAction
             }
+        }
+    }
+
+    /// 웹 번역기: 대기 항목을 읽는 순서대로 하나씩 보낸다(항목 = 세그먼트, 결과는 그 세그먼트에만 적용).
+    /// 원문 언어는 세그먼트마다 정한 언어(직접 고른 언어 또는 판별한 언어)를 지정한다. 실패한 항목은 표시하고 다음 항목을 계속하며,
+    /// 페이지 준비 실패·제한 시간 초과처럼 멈춰야 하는 오류는 받은 결과를 둔 채 중단한다. 다른 방식으로 대체하지 않는다.
+    private func runWebExternal(_ translator: WebTranslator) {
+        guard webItemsInAction < WebTranslation.itemsPerAction else {
+            externalAuthorizedDocument = nil
+            externalPhase = .awaitingAction
+            return
+        }
+        externalPhase = .running
+        let generation = translationGeneration
+        externalRunToken += 1
+        let token = externalRunToken
+        let ticket = WebTranslatorRunner.shared.ticket(for: .mail)
+        let ids = segmentOrder.filter { id in
+            if case .pending? = segmentStates[id] { return true } else { return false }
+        }.prefix(WebTranslation.itemsPerAction - webItemsInAction)
+        externalTask = Task { [weak self] in
+            guard let self else { return }
+            var failure: String?
+            for id in ids {
+                guard generation == self.translationGeneration, token == self.externalRunToken, !Task.isCancelled else { return }
+                guard case .pending? = self.segmentStates[id], let segment = self.segments[id] else { continue }
+                self.webItemsInAction += 1
+                let result = await WebTranslatorRunner.shared.translate(
+                    segment.text, source: segment.groupKey, target: self.targetLanguageID, using: translator,
+                    owner: .mail, ticket: ticket)
+                guard generation == self.translationGeneration, token == self.externalRunToken else { return }
+                switch result {
+                case .success(let translated):
+                    if case .pending? = self.segmentStates[id] { self.segmentStates[id] = .done(translated) }
+                case .failure(.item(let message)), .failure(.unsupported(let message)):
+                    if case .pending? = self.segmentStates[id] { self.segmentStates[id] = .failed(message) }
+                case .failure(.cancelled):
+                    self.externalTask = nil
+                    self.externalAuthorizedDocument = nil
+                    self.externalPhase = .awaitingAction
+                    return
+                case .failure(.fatal(let message)):
+                    failure = message
+                }
+                if failure != nil { break }
+            }
+            guard generation == self.translationGeneration, token == self.externalRunToken else { return }
+            self.externalTask = nil
+            if let failure {
+                self.externalAuthorizedDocument = nil
+                self.externalPhase = .failed(failure)
+                return
+            }
+            self.externalPhase = .idle
+            // 그사이 OCR로 생긴 항목은 이어서 보내고, 한 번 실행 상한을 넘으면 사용자가 '이어서 번역'으로 보낸다.
+            self.scheduleExternal()
         }
     }
 
