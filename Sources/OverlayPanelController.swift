@@ -61,9 +61,8 @@ final class OverlayPanel: NSPanel {
 ///   mouseUp에서 한 번 onRegionChangeEnded로 한다. 그 뒤에는 다음 명시적 캡처까지 didMove 관찰·프레임
 ///   비교·폴링을 전혀 하지 않는다. 움직이지 않은 클릭은 아무것도 바꾸지 않는다.
 /// - 사용자가 크기 조절을 마쳤을 때(mouseUp 한 번)만 창 크기를 UserDefaults에 저장하고, 다음 실행에 복원한다.
-/// - 맞추기(메뉴 '화면에/현재 창에 맞추기', Shift+헤더 끌기)도 같은 1회용 무효화를 거쳐 프레임을 바꾸고 크기를 한 번 저장한다.
+/// - 맞추기(메뉴 '화면에/현재 창에 맞추기', 제목줄 빈 곳 더블클릭)도 같은 1회용 무효화를 거쳐 프레임을 바꾸고 크기를 한 번 저장한다.
 ///   다른 앱 창 목록은 그 동작에서 한 번만 읽으며(WindowGeometry), 일반 끌기는 창 목록을 조회하지 않는다.
-///   Shift 끌기를 놓을 때만 읽기 영역(Mail 본문 등)을 백그라운드에서 한 번 찾아, 늦지 않고 그 사이 아무 조작이 없을 때만 적용한다.
 /// - 원문보기는 번역 패치만 숨겨 투명한 캡처 영역 너머의 실제 화면을 그대로 보이게 한다(캡처 이미지를 그리지 않음).
 @MainActor
 final class OverlayPanelController: NSObject {
@@ -91,8 +90,6 @@ final class OverlayPanelController: NSObject {
     /// 첫 이동 때 알린 뒤 mouseUp에서 onRegionChangeEnded를 한 번 부를 때까지 true
     private var isRegionChangeEndPending = false
     private var cancellables: Set<AnyCancellable> = []
-    /// 읽기 영역 보정 요청 번호. 새 끌기·크기 조절·맞추기·캡처·잠금·숨김 때 올려 늦게 온 결과를 버린다.
-    private var paneRequest = 0
 
     /// false면 '이동·크기 잠금': 이동과 크기 조절만 막히고 툴바는 계속 동작한다.
     var isAdjustable: Bool = true {
@@ -103,7 +100,6 @@ final class OverlayPanelController: NSObject {
             }
             titleStrip.isDragEnabled = isAdjustable
             headerView.isDragEnabled = isAdjustable
-            cancelPaneRefinement()
             lastHit = .none
             updateHover()
         }
@@ -204,7 +200,6 @@ final class OverlayPanelController: NSObject {
     /// 디스플레이 구성이 바뀌면 화면 밖·사용 불가 위치에 남지 않게 맞춘다. 옮기면 (무장돼 있을 때) 결과를 한 번 무효화한다.
     @objc private func screenParametersChanged() {
         guard !isResizing else { return }
-        cancelPaneRefinement()
         let frame = panel.frame
         let usable = Self.usableFrame(for: frame)
         guard usable != frame else { return }
@@ -247,8 +242,8 @@ final class OverlayPanelController: NSObject {
         headerView.onDragWillMove = { [weak self] in self?.dragWillMove() }
         titleStrip.onDragFinished = { [weak self] in self?.dragFinished() }
         headerView.onDragFinished = { [weak self] in self?.dragFinished() }
-        titleStrip.onShiftDrag = { [weak self] event in self?.trackShiftSnapDrag(from: event) ?? false }
-        headerView.onShiftDrag = { [weak self] event in self?.trackShiftSnapDrag(from: event) ?? false }
+        titleStrip.onDoubleClick = { [weak self] in self?.fitToWindowBehindOnDoubleClick() }
+        headerView.onDoubleClick = { [weak self] in self?.fitToWindowBehindOnDoubleClick() }
         aibiClipView.frame = headerBounds
         aibiClipView.autoresizingMask = [.width, .height]
         aibiClipView.wantsLayer = true
@@ -306,14 +301,17 @@ final class OverlayPanelController: NSObject {
     private func bindViewModel() {
         viewModel.statusPublisher
             .receive(on: RunLoop.main)
-            .sink { [weak self] status in self?.applyStatus(status) }
+            .sink { [weak self] status in
+                guard let self, !self.viewModel.hasDeferredRegionCleanup else { return }
+                self.applyStatus(status)
+            }
             .store(in: &cancellables)
 
         // 주 버튼(Enter와 같은 동작): '번역' ↔ '원문보기', 외부 AI 실행 중에는 '취소'(항상 누를 수 있음)
         Publishers.CombineLatest3(viewModel.$primaryAction, viewModel.$isProcessing, viewModel.$isExternalRunning)
             .receive(on: RunLoop.main)
             .sink { [weak self] action, isProcessing, isExternalRunning in
-                guard let self else { return }
+                guard let self, !self.viewModel.hasDeferredRegionCleanup else { return }
                 let button = self.titleStrip.primaryButton
                 if isExternalRunning {
                     button.title = "취소"
@@ -332,6 +330,7 @@ final class OverlayPanelController: NSObject {
     }
 
     private func applyStatus(_ status: AppStatus) {
+        titleStrip.statusLabel.isHidden = false
         titleStrip.statusLabel.stringValue = status.koreanText
         titleStrip.statusLabel.toolTip = status.koreanText
         titleStrip.statusLabel.textColor = status.isError
@@ -350,6 +349,7 @@ final class OverlayPanelController: NSObject {
     }
 
     @objc private func primaryButtonPressed() {
+        viewModel.finishRegionChange()
         if viewModel.isExternalRunning {
             viewModel.cancelExternalTranslation()
         } else {
@@ -375,7 +375,6 @@ final class OverlayPanelController: NSObject {
     /// 숨기기·종료(applicationWillTerminate도 여기를 거침): 크기 조절 중이면 먼저 마무리해 크기 저장을
     /// 놓치지 않는다. 프레임은 그대로 두어 다시 보일 때 같은 자리에 나타난다.
     func hide() {
-        cancelPaneRefinement()
         if isResizing { resizeEnded() }
         if isRegionChangeEndPending {
             isRegionChangeEndPending = false
@@ -435,7 +434,6 @@ final class OverlayPanelController: NSObject {
 
     /// 명시적 캡처가 시작될 때 호출된다. 이 캡처 영역에 대해 다음 첫 실제 이동/크기 변경을 한 번만 알린다.
     func armRegionInvalidation() {
-        cancelPaneRefinement()
         isRegionWatchArmed = true
     }
 
@@ -448,6 +446,10 @@ final class OverlayPanelController: NSObject {
         isRegionWatchArmed = false
         isRegionChangeEndPending = true
         patchesView.isHidden = true
+        titleStrip.statusLabel.isHidden = true
+        titleStrip.remainingBar.isHidden = true
+        titleStrip.primaryButton.isEnabled = true
+        titleStrip.primaryButton.title = "번역"
         onRegionWillChange?()
     }
 
@@ -459,9 +461,8 @@ final class OverlayPanelController: NSObject {
         onRegionChangeEnded?()
     }
 
-    /// 일반 끌기의 첫 실제 이동. 늦게 올 읽기 영역 보정을 버리고(정수 증가) 1회용 무효화만 한다.
+    /// 일반 끌기의 첫 실제 이동. 1회용 무효화만 한다.
     private func dragWillMove() {
-        cancelPaneRefinement()
         regionWillChange()
     }
 
@@ -473,7 +474,6 @@ final class OverlayPanelController: NSObject {
     // MARK: - 크기 조절
 
     private func resizeBegan() {
-        cancelPaneRefinement()
         isResizing = true
         resizeStartSize = panel.frame.size
     }
@@ -487,13 +487,6 @@ final class OverlayPanelController: NSObject {
     }
 
     // MARK: - 화면·다른 창에 맞추기
-
-    /// 'Shift를 누른 채 헤더 끌기로 창에 맞추기' 사용 여부(기본 켜짐). 끄면 Shift 끌기도 일반 이동이다.
-    private static let shiftSnapKey = "ScreenOverlay.shiftSnapToWindow"
-    var isShiftSnapEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: Self.shiftSnapKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: Self.shiftSnapKey) }
-    }
 
     /// 마지막 맞추기 직전 프레임(메모리에만). '맞추기 전 크기로'가 한 번 되돌린다.
     private var frameBeforeFit: NSRect?
@@ -533,7 +526,6 @@ final class OverlayPanelController: NSObject {
     /// 프레임을 한 번 바꾸고 크기를 한 번 저장한다. 번역·캡처는 시작하지 않는다.
     private func applyFittedFrame(_ frame: NSRect) -> Bool {
         guard isAdjustable, !isResizing, frame != panel.frame else { return false }
-        cancelPaneRefinement()
         frameBeforeFit = panel.frame
         regionWillChange()
         panel.setFrame(frame, display: true)
@@ -543,97 +535,11 @@ final class OverlayPanelController: NSObject {
         return true
     }
 
-    /// Shift를 누른 채 헤더(제목 스트립·툴바 빈 곳)를 끌 때. 기능이 꺼져 있으면 false를 돌려 일반 이동으로 넘긴다.
-    /// - 움직이지 않은 클릭은 아무것도 하지 않는다. 첫 실제 이동에서 1회용 무효화를 한 뒤 다른 앱 창 목록을 딱 한 번 읽어
-    ///   이 끌기 동안만 보관한다(이후 이벤트에서는 메모리의 경계와 포인터만 비교).
-    /// - 포인터 아래 맨 위 후보 창이 바뀔 때만 그 창 경계에 맞춰 프레임을 한 번 바꾼다(같은 창 위에서는 프레임 변경 없음).
-    /// - 후보가 없는 곳(바탕화면·이 앱 창 위 등)에서는 시작 크기로 돌아가 잡은 지점을 유지한 채 일반 이동처럼 따라온다.
-    ///   포인터를 옮기지(워프하지) 않는다. 놓으면 그 상태로 끝나고, 크기가 바뀌었으면 한 번 저장한다.
-    /// - 다른 앱 창에 맞춘 채 놓았으면 그때 한 번만 읽기 영역 보정을 시작한다(끌기 이벤트마다 손쉬운 사용 API를 부르지 않음).
-    private func trackShiftSnapDrag(from mouseDown: NSEvent) -> Bool {
-        guard isShiftSnapEnabled else { return false }
-        cancelPaneRefinement()
-        let startMouse = NSEvent.mouseLocation
-        let startFrame = panel.frame
-        let grab = NSPoint(x: startMouse.x - startFrame.minX, y: startMouse.y - startFrame.minY)
-        var candidates: [WindowGeometry.Candidate] = []
-        var snapped: WindowGeometry.Candidate?
-        var didMove = false
-        while let event = panel.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            guard event.type == .leftMouseDragged else { break }
-            let mouse = NSEvent.mouseLocation
-            if !didMove {
-                guard mouse != startMouse else { continue }
-                didMove = true
-                regionWillChange()
-                candidates = WindowGeometry.otherAppWindows()
-            }
-            if let hit = candidates.first(where: { $0.frame.contains(mouse) }) {
-                if hit.id == snapped?.id { continue }
-                if let fitted = WindowGeometry.fittedFrame(for: hit.frame, preferring: mouse) {
-                    snapped = hit
-                    if fitted != panel.frame { panel.setFrame(fitted, display: true) }
-                    continue
-                }
-            }
-            let origin = NSPoint(x: mouse.x - grab.x, y: mouse.y - grab.y)
-            if snapped != nil || panel.frame.size != startFrame.size {
-                snapped = nil
-                panel.setFrame(NSRect(origin: origin, size: startFrame.size), display: true)
-            } else {
-                panel.setFrameOrigin(origin)
-            }
-        }
-        if didMove, panel.frame != startFrame {
-            frameBeforeFit = startFrame
-            if panel.frame.size != startFrame.size { saveSize(panel.frame.size) }
-        }
-        if didMove, let snapped { refineToContentPane(of: snapped, at: NSEvent.mouseLocation) }
-        return true
-    }
-
-    // MARK: - 읽기 영역 보정(Shift 끌기를 놓을 때 한 번)
-
-    /// 보정 결과를 받아들이는 최대 시간(놓은 뒤). 넘으면 늦은 결과로 보고 버린다.
-    private static let paneApplyLimit: TimeInterval = 0.8
-
-    private func cancelPaneRefinement() {
-        paneRequest &+= 1
-    }
-
-    /// 놓은 지점의 읽기 영역을 메인 스레드 밖에서 한 번 찾는다. 손쉬운 사용 권한이 이미 없으면 아무것도 하지 않는다
-    /// (권한 요청 없음, 창 전체 맞추기 유지). 찾은 영역은 메모리에서 프레임 계산에만 쓰고 버린다.
-    private func refineToContentPane(of target: WindowGeometry.Candidate, at pointer: NSPoint) {
-        guard AXIsProcessTrusted(),
-              let query = WindowGeometry.paneQuery(pid: target.pid, pointer: pointer, windowFrame: target.frame) else { return }
-        cancelPaneRefinement()
-        let request = paneRequest
-        let releasedFrame = panel.frame
-        let started = Date()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let pane = ContentPaneResolver.resolve(query)
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, let pane, request == self.paneRequest else { return }
-                    self.applyContentPane(pane, pointer: pointer, releasedFrame: releasedFrame, started: started)
-                }
-            }
-        }
-    }
-
-    /// 놓은 뒤 아무 조작이 없었을 때만(같은 프레임·버튼 안 눌림·잠금 아님·제한 시간 안) 한 번 적용한다.
-    private func applyContentPane(_ paneTopLeft: CGRect, pointer: NSPoint, releasedFrame: NSRect, started: Date) {
-        guard panel.isVisible, isAdjustable, !isResizing, NSEvent.pressedMouseButtons == 0,
-              panel.frame == releasedFrame, Date().timeIntervalSince(started) < Self.paneApplyLimit,
-              let pane = WindowGeometry.appKitRect(fromTopLeft: paneTopLeft),
-              let frame = WindowGeometry.paneFittedFrame(for: pane, preferring: pointer),
-              frame != panel.frame else { return }
-        cancelPaneRefinement()
-        regionWillChange()
-        panel.setFrame(frame, display: true)
-        saveSize(frame.size)
-        regionChangeEnded()
-        resetHover()
+    /// 제목줄 빈 곳 더블클릭: 잠금 중이면 아무것도 하지 않는다. 그 외에는 fitToWindowBehind()와 같은 규칙으로
+    /// 현재 뒤에 겹쳐진 다른 앱 창의 크기·위치에 맞춘다.
+    private func fitToWindowBehindOnDoubleClick() {
+        guard isAdjustable else { return }
+        _ = fitToWindowBehind()
     }
 
     // MARK: - 마우스 통과/커서

@@ -272,10 +272,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         restore.isEnabled = adjustable && overlay.canRestoreFrameBeforeFit
         submenu.addItem(restore)
         submenu.addItem(.separator())
-        let shiftSnap = item("Shift+끌기로 창에 맞추기", #selector(toggleShiftSnap), symbol: "shift")
-        shiftSnap.state = overlay.isShiftSnapEnabled ? .on : .off
-        shiftSnap.toolTip = "Shift를 누른 채 헤더를 끌면 포인터 아래 다른 앱 창 크기에 맞춥니다. 손쉬운 사용 권한이 이미 허용돼 있으면 놓을 때 Mail 본문 같은 읽기 영역에 한 번 더 맞춥니다(권한은 요청하지 않으며, 없으면 창 전체에 맞춤)"
-        submenu.addItem(shiftSnap)
+        let tip = info("제목줄 빈 곳을 더블클릭하면 뒤에 겹쳐진 다른 앱 창 크기에 맞춥니다")
+        submenu.addItem(tip)
         return submenu
     }
 
@@ -291,10 +289,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func restoreOverlayFrame() {
         overlay.restoreFrameBeforeFit()
-    }
-
-    @objc private func toggleShiftSnap() {
-        overlay.isShiftSnapEnabled.toggle()
     }
 
     /// 단축키 등록, 로그인 항목, 업데이트의 세부 진단 텍스트(평상시 숨겨둠)

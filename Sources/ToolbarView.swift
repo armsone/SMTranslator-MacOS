@@ -105,7 +105,8 @@ struct ToolbarView: View {
             for await job in jobs {
                 guard viewModel.isJobCurrent(job.generation) else { continue }
                 var failure: Error?
-                // 묶음마다 한 언어만 담긴다. 원문 언어가 nil(자동 인식)인 같은 세션이 묶음마다 언어를 새로 식별한다.
+                // 묶음마다 한 언어만 담긴다. 묶음마다 그 언어를 명시한 configuration으로 세션을 새로 여므로
+                // 원문 언어가 nil인 세션으로 재판별하지 않는다.
                 for batch in job.batches {
                     guard viewModel.isJobCurrent(job.generation), !Task.isCancelled else { break }
                     do {

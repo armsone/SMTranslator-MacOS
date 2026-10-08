@@ -66,10 +66,11 @@ enum AppStatus: Equatable {
     case idle
     case capturing
     case recognizing
-    case translating(done: Int, total: Int)
+    /// skipped: 언어를 판별하지 못했거나 지원되지 않아 원문 그대로 둔(번역 요청을 보내지 않은) 줄 수.
+    case translating(done: Int, total: Int, skipped: Int = 0)
     /// 외부 AI(웹 로그인) 번역 진행: 단계, 답변 대기 남은 시간(생성 확인 뒤에만), 완료 줄 수
     case externalTranslating(provider: String, stage: String, remaining: TimeInterval?, done: Int, total: Int)
-    case completed
+    case completed(skipped: Int = 0)
     case showingOriginal
     case info(String)
     case error(String)
@@ -79,7 +80,9 @@ enum AppStatus: Equatable {
         case .idle: return "번역을 눌러 시작하세요"
         case .capturing: return "화면 캡처 중"
         case .recognizing: return "텍스트 인식 중"
-        case .translating(let done, let total): return "번역 중 (\(done)/\(total)줄)"
+        case .translating(let done, let total, let skipped):
+            let suffix = skipped > 0 ? " (언어 미판별 \(skipped)줄 원문 유지)" : ""
+            return "번역 중 (\(done)/\(total)줄)" + suffix
         case .externalTranslating(let provider, let stage, let remaining, let done, let total):
             var text = "\(provider) · \(stage)"
             if let remaining {
@@ -87,7 +90,8 @@ enum AppStatus: Equatable {
                 text += " · 남은 시간 \(seconds / 60):\(String(format: "%02d", seconds % 60))"
             }
             return text + " (\(done)/\(total)줄)"
-        case .completed: return "완료 · Space/Enter: 원문보기"
+        case .completed(let skipped):
+            return skipped > 0 ? "완료(언어 미판별 \(skipped)줄 원문 유지) · Space/Enter: 원문보기" : "완료 · Space/Enter: 원문보기"
         case .showingOriginal: return "원문 표시 중 · Space: 저장된 번역 · Enter: 새로 번역"
         case .info(let message): return message
         case .error(let message): return message

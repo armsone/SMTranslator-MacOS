@@ -545,7 +545,9 @@ final class AppModel {
         let key = groupKey(for: trimmed)
         segments[id] = Segment(text: trimmed, groupKey: key)
         segmentOrder.append(id)
-        if !trimmed.contains(where: { $0.isLetter }) || isTargetLanguage(key) {
+        // key == "auto": 문서 전체·주변 단서로도 언어를 정하지 못한 경우. 원문 언어가 nil인 세션으로
+        // 보내면 Apple이 자동 판별에 실패해 '언어 선택' 팝업을 띄울 수 있어, 요청하지 않고 원문을 그대로 둔다.
+        if !trimmed.contains(where: { $0.isLetter }) || isTargetLanguage(key) || key == "auto" {
             segmentStates[id] = .skipped
         } else if let message = groupFailures[key] {
             segmentStates[id] = .failed(message)
