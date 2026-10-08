@@ -2,11 +2,13 @@ import SwiftUI
 import Translation
 import AppKit
 
-/// 통합 창 헤더 아래쪽 툴바 행. 언어 선택, 항상 위, 이동·크기 잠금, 복사, 그리고
-/// 가장 오른쪽 주 버튼('캡처·번역' ↔ '원문보기')을 담는다. 닫기(숨기기)는 위쪽 제목
-/// 스트립과 메뉴 막대 메뉴에 있다.
+/// 통합 창 헤더 아래쪽 툴바 행. 언어 선택, 항상 위, 이동·크기 잠금, 복사, 색상 설정을
+/// 담는다. 주 버튼('번역' ↔ '원문보기')은 위쪽 제목 스트립으로 옮겨졌으며(TitleDragStripView),
+/// 닫기(숨기기)도 그 줄과 메뉴 막대 메뉴에 있다. 이 뷰의 .translationTask는 주 버튼의 위치와
+/// 무관하게 창이 보이는 동안 계속 살아 있어야 하므로 버튼 유무와 분리해 HStack에 붙여 둔다.
 struct ToolbarView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var isColorPopoverPresented = false
 
     private var isLocked: Binding<Bool> {
         Binding(get: { !viewModel.isAdjustable }, set: { viewModel.isAdjustable = !$0 })
@@ -48,7 +50,7 @@ struct ToolbarView: View {
                 Label("이동·크기 잠금", systemImage: viewModel.isAdjustable ? "lock.open" : "lock.fill")
             }
             .toggleStyle(.button)
-            .help("이동·크기 잠금: 켜면 창 이동과 가장자리 크기 조절만 막힙니다. 캡처·번역과 툴바는 계속 동작합니다.")
+            .help("이동·크기 잠금: 켜면 창 이동과 가장자리 크기 조절만 막힙니다. 번역 버튼과 툴바는 계속 동작합니다.")
 
             Button(action: { viewModel.copyTranslatedText() }) {
                 Image(systemName: "doc.on.doc")
@@ -56,26 +58,15 @@ struct ToolbarView: View {
             .disabled(viewModel.translatedPatches.isEmpty)
             .help("번역문 복사")
 
-            Spacer(minLength: 4)
-
-            // 가장 오른쪽 주 버튼. 창에 포커스가 있을 때 Space/Return/키패드 Enter도
-            // 같은 동작을 실행한다(OverlayPanel.sendEvent).
-            Button(action: { viewModel.performPrimaryAction() }) {
-                HStack(spacing: 4) {
-                    if viewModel.isProcessing {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Image(systemName: viewModel.primaryAction.systemImage)
-                    }
-                    Text(viewModel.primaryAction.title)
-                }
-                .frame(minWidth: 78)
+            Button(action: { isColorPopoverPresented.toggle() }) {
+                Image(systemName: "paintpalette")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.isProcessing)
-            .help(viewModel.primaryAction == .showOriginal
-                  ? "방금 캡처한 원본 화면을 같은 자리에 보여줍니다 (Space 또는 Enter)"
-                  : "현재 영역을 한 번 캡처해 인식·번역합니다 (Space 또는 Enter)")
+            .help("번역문 글자색·배경색·진하기 설정")
+            .popover(isPresented: $isColorPopoverPresented, arrowEdge: .bottom) {
+                PatchColorSettingsView(viewModel: viewModel)
+            }
+
+            Spacer(minLength: 4)
         }
         .controlSize(.small)
         .buttonStyle(.borderless)
@@ -100,5 +91,67 @@ struct ToolbarView: View {
                 }
             }
         }
+    }
+}
+
+/// 번역문 글자색·배경색·진하기 팝오버. 자동 켜짐이 기본값이며, 끄면 수동
+/// ColorPicker가 활성화된다. 진하기 슬라이더는 자동/수동 모두에서 항상 동작한다.
+private struct PatchColorSettingsView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    private var useAutoColors: Binding<Bool> {
+        Binding(get: { viewModel.colorSettings.useAutoColors },
+                set: { viewModel.colorSettings.useAutoColors = $0 })
+    }
+
+    private var manualBackgroundColor: Binding<Color> {
+        Binding(get: { Color(viewModel.colorSettings.manualBackgroundColor.nsColor) },
+                set: { viewModel.colorSettings.manualBackgroundColor = $0.rgbColor })
+    }
+
+    private var manualTextColor: Binding<Color> {
+        Binding(get: { Color(viewModel.colorSettings.manualTextColor.nsColor) },
+                set: { viewModel.colorSettings.manualTextColor = $0.rgbColor })
+    }
+
+    private var backgroundOpacity: Binding<Double> {
+        Binding(get: { viewModel.colorSettings.backgroundOpacity },
+                set: { viewModel.colorSettings.backgroundOpacity = $0 })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("번역문 색상")
+                .font(.headline)
+
+            Toggle("자동 색상 (캡처 배경에서 추출)", isOn: useAutoColors)
+                .toggleStyle(.checkbox)
+                .help("켜면 원문 줄 뒤 배경색을 캡처 이미지에서 추출해 배경으로 쓰고, 그 밝기에 맞춰 글자색을 검정/흰색 중 자동으로 고릅니다.")
+
+            VStack(alignment: .leading, spacing: 6) {
+                ColorPicker("배경색", selection: manualBackgroundColor, supportsOpacity: false)
+                ColorPicker("글자색", selection: manualTextColor, supportsOpacity: false)
+            }
+            .disabled(viewModel.colorSettings.useAutoColors)
+            .opacity(viewModel.colorSettings.useAutoColors ? 0.4 : 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("진하기 \(Int((viewModel.colorSettings.backgroundOpacity * 100).rounded()))%")
+                Slider(value: backgroundOpacity, in: 0...1)
+            }
+        }
+        .padding(14)
+        .frame(width: 220)
+    }
+}
+
+private extension Color {
+    /// ColorPicker 결과(Color)를 저장용 RGBColor로 변환. sRGB 변환 실패 시(이론상
+    /// 발생하지 않음) 중립 회색으로 안전하게 대체한다.
+    var rgbColor: RGBColor {
+        guard let converted = NSColor(self).usingColorSpace(.sRGB) else {
+            return RGBColor(red: 0.5, green: 0.5, blue: 0.5)
+        }
+        return RGBColor(red: converted.redComponent, green: converted.greenComponent, blue: converted.blueComponent)
     }
 }

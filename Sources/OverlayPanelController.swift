@@ -37,6 +37,8 @@ final class OverlayPanel: NSPanel {
 ///   창이 마우스를 받도록 ignoresMouseEvents를 값이 바뀔 때만 토글한다.
 /// - 이동은 네이티브 performDrag(with:), 크기 조절은 ResizeHandleView의 스냅샷+이동량 계산.
 /// - 드래그/크기 조절 중에는 호버 추적을 멈춘다.
+/// - 이동/크기 조절 중(버튼 눌림)에는 결과 무효화를 미루고 마우스를 놓은 뒤 한 번만 알린다.
+///   네이티브 이동 루프 안에서 SwiftUI 상태 갱신·패치 제거가 일어나지 않게 하기 위함이다.
 @MainActor
 final class OverlayPanelController: NSObject {
     let panel: OverlayPanel
@@ -54,6 +56,7 @@ final class OverlayPanelController: NSObject {
     private var localMouseMonitor: Any?
     private var lastHit: HitRegion = .none
     private var isResizing = false
+    private var hasPendingRegionChange = false
     private var cancellables: Set<AnyCancellable> = []
 
     /// false면 '이동·크기 잠금': 이동과 크기 조절만 막히고 툴바는 계속 동작한다.
@@ -74,7 +77,7 @@ final class OverlayPanelController: NSObject {
         didSet { panel.level = isAlwaysOnTop ? .floating : .normal }
     }
 
-    /// 창 이동/크기 변경 시 호출 (이동 중 반복 호출될 수 있다)
+    /// 창 이동/크기 변경이 끝났을 때 호출 (버튼을 놓은 뒤 한 번)
     var onRegionChanged: (() -> Void)?
     /// 창이 숨겨지기 직전에 호출 (진행 중 작업 취소용)
     var onWillHide: (() -> Void)?
@@ -146,6 +149,8 @@ final class OverlayPanelController: NSObject {
         titleStrip.autoresizingMask = [.width]
         titleStrip.closeButton.target = self
         titleStrip.closeButton.action = #selector(closeButtonPressed)
+        titleStrip.primaryButton.target = self
+        titleStrip.primaryButton.action = #selector(primaryButtonPressed)
         titleStrip.onDragFinished = { [weak self] in self?.interactionEnded() }
         headerView.onDragFinished = { [weak self] in self?.interactionEnded() }
         headerView.addSubview(toolbarHostingView)
@@ -202,6 +207,29 @@ final class OverlayPanelController: NSObject {
                     : NSColor(calibratedWhite: 0.78, alpha: 1)
             }
             .store(in: &cancellables)
+
+        viewModel.$primaryAction
+            .receive(on: RunLoop.main)
+            .sink { [weak self] action in
+                guard let self else { return }
+                self.titleStrip.primaryButton.title = action.title
+                self.titleStrip.primaryButton.toolTip = action == .showOriginal
+                    ? "방금 캡처한 원본 화면을 같은 자리에 보여줍니다 (Space 또는 Enter)"
+                    : "현재 영역을 한 번 캡처해 인식·번역합니다 (Space 또는 Enter)"
+                self.titleStrip.needsLayout = true
+            }
+            .store(in: &cancellables)
+
+        viewModel.$isProcessing
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isProcessing in
+                self?.titleStrip.primaryButton.isEnabled = !isProcessing
+            }
+            .store(in: &cancellables)
+    }
+
+    @objc private func primaryButtonPressed() {
+        viewModel.performPrimaryAction()
     }
 
     // MARK: - 표시/숨김
@@ -239,6 +267,7 @@ final class OverlayPanelController: NSObject {
     // MARK: - 결과 표시
 
     func clearResultDisplay() {
+        interiorView.isHidden = false
         patchesView.removeAllPatches()
         originalImageView.image = nil
         originalImageView.isHidden = true
@@ -256,6 +285,11 @@ final class OverlayPanelController: NSObject {
         patchesView.add(patch: patch)
     }
 
+    /// 글자색/배경색/진하기 설정이 바뀔 때 호출된다. 이미 표시된 패치도 즉시 다시 칠한다.
+    func updatePatchColorSettings(_ settings: PatchColorSettings) {
+        patchesView.colorSettings = settings
+    }
+
     func showOriginal(image: CGImage) {
         originalImageView.image = NSImage(cgImage: image, size: interiorView.bounds.size)
         originalImageView.isHidden = false
@@ -265,15 +299,40 @@ final class OverlayPanelController: NSObject {
     // MARK: - 마우스 통과/커서
 
     @objc private func windowFrameChanged() {
+        if isResizing || NSEvent.pressedMouseButtons != 0 {
+            // 옛 결과(behindWindow 블러 패치 포함)는 화면과 맞지 않으므로 숨기기만 하고,
+            // 상태 무효화는 놓은 뒤 flushPendingRegionChange에서 한 번만 한다.
+            if !hasPendingRegionChange {
+                hasPendingRegionChange = true
+                interiorView.isHidden = true
+            }
+        } else {
+            hasPendingRegionChange = false
+            interiorView.isHidden = false
+            onRegionChanged?()
+        }
+    }
+
+    /// 미뤄 둔 영역 변경을 버튼이 놓였을 때 한 번 알린다. 캡처 직전에도 호출된다.
+    func flushPendingRegionChange() {
+        guard hasPendingRegionChange, !isResizing, NSEvent.pressedMouseButtons == 0 else { return }
+        hasPendingRegionChange = false
+        interiorView.isHidden = false
         onRegionChanged?()
     }
 
     private func startMonitoring() {
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateHover() }
+            MainActor.assumeIsolated {
+                self?.flushPendingRegionChange()
+                self?.updateHover()
+            }
         }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp]) { [weak self] event in
-            MainActor.assumeIsolated { self?.updateHover() }
+            MainActor.assumeIsolated {
+                self?.flushPendingRegionChange()
+                self?.updateHover()
+            }
             return event
         }
     }
@@ -286,6 +345,7 @@ final class OverlayPanelController: NSObject {
     }
 
     private func interactionEnded() {
+        flushPendingRegionChange()
         lastHit = .none
         updateHover()
     }

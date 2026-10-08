@@ -1,5 +1,6 @@
 import Foundation
 import Translation
+import AppKit
 
 /// 앱이 지원하는 언어 목록 (요구사항 최소 4개: 영어, 일본어, 중국어 간체, 한국어)
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -47,7 +48,7 @@ enum AppStatus: Equatable {
 
     var koreanText: String {
         switch self {
-        case .idle: return "캡처·번역을 눌러 시작하세요"
+        case .idle: return "번역을 눌러 시작하세요"
         case .capturing: return "화면 캡처 중"
         case .recognizing: return "텍스트 인식 중"
         case .translating(let done, let total): return "번역 중 (\(done)/\(total)줄)"
@@ -64,15 +65,15 @@ enum AppStatus: Equatable {
     }
 }
 
-/// 주 버튼(가장 오른쪽)의 현재 동작. 번역이 모두 성공한 결과가 있을 때만
-/// '원문보기'가 되고, 원문을 보여준 뒤에는 다시 '캡처·번역'으로 돌아온다.
+/// 주 버튼(제목 스트립 오른쪽)의 현재 동작. 번역이 모두 성공한 결과가 있을 때만
+/// '원문보기'가 되고, 원문을 보여준 뒤에는 다시 '번역'으로 돌아온다.
 enum PrimaryAction {
     case captureAndTranslate
     case showOriginal
 
     var title: String {
         switch self {
-        case .captureAndTranslate: return "캡처·번역"
+        case .captureAndTranslate: return "번역"
         case .showOriginal: return "원문보기"
         }
     }
@@ -93,11 +94,81 @@ struct OCRLine: Identifiable {
     let boundingBox: CGRect
 }
 
+/// 0...1 범위 RGB. 캡처 이미지에서 추출한 배경색을 가볍게 들고 다니기 위한 값 타입.
+struct RGBColor: Equatable {
+    var red: CGFloat
+    var green: CGFloat
+    var blue: CGFloat
+
+    /// ITU-R BT.601 명도 근사값(0...1). 배경 밝기에 따라 검정/흰색 글자를 고르는 데 쓴다.
+    var luminance: CGFloat { 0.299 * red + 0.587 * green + 0.114 * blue }
+
+    var nsColor: NSColor { NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1) }
+
+    /// 실제 픽셀 추출이 불가능할 때 쓰는 중립 배경색 대체값(라이트/다크 모드별).
+    static func neutralFallback(isDark: Bool) -> RGBColor {
+        isDark ? RGBColor(red: 0.12, green: 0.12, blue: 0.12) : RGBColor(red: 0.96, green: 0.96, blue: 0.96)
+    }
+}
+
 /// 화면에 그릴 번역 패치: 원문 줄의 위치에 번역문을 겹쳐 그리기 위한 단위.
 struct TranslatedPatch: Identifiable {
     let id: Int
     let translatedText: String
     let boundingBox: CGRect
+    /// 캡처 이미지에서 추출한 원문 줄 배경색. 추출 실패 시 nil(뷰가 중립색으로 대체).
+    var autoBackgroundColor: RGBColor?
+}
+
+/// 번역 패치의 글자색/배경색/진하기 사용자 설정. UserDefaults에 비민감 값만 저장한다.
+struct PatchColorSettings: Equatable {
+    static let defaultOpacity: Double = 0.95
+
+    /// true면 캡처 이미지에서 추출한 배경색 + 명도 대비 자동 글자색을 쓴다.
+    var useAutoColors: Bool = true
+    var manualBackgroundColor: RGBColor = RGBColor(red: 0.96, green: 0.96, blue: 0.96)
+    var manualTextColor: RGBColor = RGBColor(red: 0, green: 0, blue: 0)
+    /// 패치 배경 불투명도 0...1 (기본 95%). 자동/수동 모드 모두에 적용된다.
+    var backgroundOpacity: Double = defaultOpacity
+
+    private enum Keys {
+        static let useAuto = "PatchColor.useAutoColors"
+        static let bgR = "PatchColor.manualBackgroundRed"
+        static let bgG = "PatchColor.manualBackgroundGreen"
+        static let bgB = "PatchColor.manualBackgroundBlue"
+        static let textR = "PatchColor.manualTextRed"
+        static let textG = "PatchColor.manualTextGreen"
+        static let textB = "PatchColor.manualTextBlue"
+        static let opacity = "PatchColor.backgroundOpacity"
+    }
+
+    static func loadFromDefaults() -> PatchColorSettings {
+        let d = UserDefaults.standard
+        var settings = PatchColorSettings()
+        if d.object(forKey: Keys.useAuto) != nil { settings.useAutoColors = d.bool(forKey: Keys.useAuto) }
+        if d.object(forKey: Keys.opacity) != nil { settings.backgroundOpacity = d.double(forKey: Keys.opacity) }
+        if d.object(forKey: Keys.bgR) != nil {
+            settings.manualBackgroundColor = RGBColor(
+                red: d.double(forKey: Keys.bgR), green: d.double(forKey: Keys.bgG), blue: d.double(forKey: Keys.bgB))
+        }
+        if d.object(forKey: Keys.textR) != nil {
+            settings.manualTextColor = RGBColor(
+                red: d.double(forKey: Keys.textR), green: d.double(forKey: Keys.textG), blue: d.double(forKey: Keys.textB))
+        }
+        return settings
+    }
+
+    func saveToDefaults() {
+        let d = UserDefaults.standard
+        d.set(useAutoColors, forKey: Keys.useAuto)
+        d.set(backgroundOpacity, forKey: Keys.opacity)
+        d.set(manualBackgroundColor.red, forKey: Keys.bgR)
+        d.set(manualBackgroundColor.green, forKey: Keys.bgG)
+        d.set(manualBackgroundColor.blue, forKey: Keys.bgB)
+        d.set(manualTextColor.red, forKey: Keys.textR)
+        d.set(manualTextColor.green, forKey: Keys.textG)
+        d.set(manualTextColor.blue, forKey: Keys.textB)
+    }
 }
 
 /// .translationTask 클로저에 전달되는 한 번의 스트리밍 배치 번역 작업.

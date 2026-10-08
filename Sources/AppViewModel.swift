@@ -4,7 +4,7 @@ import Translation
 
 /// 캡처·인식·번역 상태 기계.
 /// - 자동/주기 캡처는 없다. 사용자가 주 버튼(또는 Space/Enter, 메뉴)을 누를 때만 1회 캡처한다.
-/// - 주 버튼은 '캡처·번역' ↔ '원문보기' 두 상태를 오간다. 모든 줄 번역이 성공해야만
+/// - 주 버튼은 '번역' ↔ '원문보기' 두 상태를 오간다. 모든 줄 번역이 성공해야만
 ///   '원문보기'가 되며, 누르면 방금 캡처해 메모리에 보관한 원본 이미지를 같은 영역에 보여준다.
 /// - 번역은 TranslationSession.translate(batch:) 스트리밍으로 받으며, 줄이 끝나는 즉시
 ///   clientIdentifier → 바운딩 박스로 매핑해 화면에 바로 그린다.
@@ -29,6 +29,13 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var primaryAction: PrimaryAction = .captureAndTranslate
     /// 화면에 그려진 번역 패치(줄 ID 순). 복사 버튼이 사용한다.
     @Published private(set) var translatedPatches: [TranslatedPatch] = []
+    /// 번역 패치 글자색/배경색/진하기 설정. 변경 즉시 이미 표시된 패치에도 다시 적용된다.
+    @Published var colorSettings: PatchColorSettings = .loadFromDefaults() {
+        didSet {
+            colorSettings.saveToDefaults()
+            overlay?.updatePatchColorSettings(colorSettings)
+        }
+    }
 
     /// 언어 조합이 바뀔 때만 새로 만든다. 같은 조합이면 캡처마다 세션을 재설정하지 않고
     /// .translationTask 클로저와 그 안의 TranslationSession(모델)을 계속 재사용한다.
@@ -47,6 +54,8 @@ final class AppViewModel: ObservableObject {
     /// 현재 결과에 대응하는 원본 캡처 이미지. 메모리에만 보관하며 디스크 저장/전송하지 않는다.
     private var capturedImage: CGImage?
     private var currentLines: [Int: OCRLine] = [:]
+    /// 현재 캡처 이미지에서 줄별로 추출한 배경색(캡처당 1회 계산). 추출 실패한 줄은 없다.
+    private var lineBackgroundColors: [Int: RGBColor] = [:]
     private var receivedLineIDs: Set<Int> = []
     private var hasCompleteResult = false
     private var isDisplayingResult = false
@@ -61,6 +70,7 @@ final class AppViewModel: ObservableObject {
         self.overlay = overlay
         overlay.isAdjustable = isAdjustable
         overlay.isAlwaysOnTop = isAlwaysOnTop
+        overlay.updatePatchColorSettings(colorSettings)
         overlay.onRegionChanged = { [weak self] in
             self?.regionChanged()
         }
@@ -70,6 +80,8 @@ final class AppViewModel: ObservableObject {
 
     /// 주 버튼, Space/Return/키패드 Enter, 메뉴가 공통으로 호출한다.
     func performPrimaryAction() {
+        // 놓은 직후 아직 알리지 못한 영역 변경이 있으면 옛 결과를 먼저 무효화한다.
+        overlay?.flushPendingRegionChange()
         guard !isProcessing else { return }
         switch primaryAction {
         case .captureAndTranslate:
@@ -125,13 +137,13 @@ final class AppViewModel: ObservableObject {
         currentCaptureTask = nil
         isProcessing = false
         clearResult()
-        status = .info("영역이 바뀌었습니다. 캡처·번역을 눌러주세요")
+        status = .info("영역이 바뀌었습니다. 번역을 눌러주세요")
     }
 
     /// 언어 변경: 진행 중 작업만 취소하고 자동 재번역은 하지 않는다. 세션은 다음 캡처 때
     /// 새 언어 조합으로 한 번만 구성된다.
     private func languagesChanged() {
-        cancelInFlightWork(message: "언어가 바뀌었습니다. 캡처·번역을 눌러주세요")
+        cancelInFlightWork(message: "언어가 바뀌었습니다. 번역을 눌러주세요")
         jobContinuation?.finish()
         jobContinuation = nil
         pendingJob = nil
@@ -160,6 +172,7 @@ final class AppViewModel: ObservableObject {
     private func clearResult() {
         capturedImage = nil
         currentLines = [:]
+        lineBackgroundColors = [:]
         receivedLineIDs = []
         translatedPatches = []
         hasCompleteResult = false
@@ -268,11 +281,15 @@ final class AppViewModel: ObservableObject {
 
         status = .recognizing
         let lines: [OCRLine]
+        let bgColors: [Int: RGBColor]
         do {
             // VNImageRequestHandler.perform은 블로킹 호출이므로 메인 액터 밖에서 실행해
-            // '텍스트 인식 중' 상태가 실제로 그려지고 UI가 계속 반응하게 한다.
-            lines = try await Task.detached(priority: .userInitiated) {
-                try CaptureService.recognizeText(in: image, language: source)
+            // '텍스트 인식 중' 상태가 실제로 그려지고 UI가 계속 반응하게 한다. 배경색
+            // 추출도 같은 캡처 이미지로 여기서 한 번만(캡처당 1회) 계산한다.
+            (lines, bgColors) = try await Task.detached(priority: .userInitiated) {
+                let lines = try CaptureService.recognizeText(in: image, language: source)
+                let colors = CaptureService.sampleBackgroundColors(in: image, lines: lines)
+                return (lines, colors)
             }.value
         } catch {
             failed("텍스트 인식 오류: \(error.localizedDescription)")
@@ -292,12 +309,13 @@ final class AppViewModel: ObservableObject {
         clearResult()
         capturedImage = image
         currentLines = Dictionary(uniqueKeysWithValues: lines.map { ($0.id, $0) })
+        lineBackgroundColors = bgColors
         isDisplayingResult = true
         overlay?.beginTranslationDisplay()
 
         if source == target {
             for line in lines {
-                appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox))
+                appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
             }
             completeIfAllReceived()
             return
@@ -348,7 +366,7 @@ final class AppViewModel: ObservableObject {
               let lineID = Int(parts[1]),
               let line = currentLines[lineID],
               !receivedLineIDs.contains(lineID) else { return }
-        appendPatch(TranslatedPatch(id: lineID, translatedText: response.targetText, boundingBox: line.boundingBox))
+        appendPatch(TranslatedPatch(id: lineID, translatedText: response.targetText, boundingBox: line.boundingBox, autoBackgroundColor: lineBackgroundColors[lineID]))
         status = .translating(done: receivedLineIDs.count, total: currentLines.count)
     }
 

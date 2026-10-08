@@ -130,4 +130,102 @@ enum CaptureService {
             return OCRLine(id: index, text: text, boundingBox: observation.boundingBox)
         }
     }
+
+    // MARK: - 줄별 배경색 추출(번역 패치 자동 배경색/글자색용)
+
+    private struct RGBABuffer {
+        let width: Int
+        let height: Int
+        let bytesPerRow: Int
+        let bytesPerPixel: Int
+        let data: [UInt8]
+    }
+
+    /// 캡처 이미지를 한 번만 디코딩해 RGBA8 픽셀 버퍼로 만든다(캡처당 1회).
+    private static func makeRGBABuffer(_ image: CGImage) -> RGBABuffer? {
+        let width = image.width, height = image.height
+        guard width > 0, height > 0 else { return nil }
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var data = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: &data, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        // CGContext로 다시 그려 픽셀 포맷(채널 순서·정렬)을 고정한다. 버퍼의 첫 행이
+        // 이미지 맨 위 행과 같아, Vision의 좌하단 원점 bbox를 위→아래로 뒤집어 맞춘다.
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return RGBABuffer(width: width, height: height, bytesPerRow: bytesPerRow, bytesPerPixel: bytesPerPixel, data: data)
+    }
+
+    private static func median(_ values: [UInt8]) -> CGFloat? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        return CGFloat(sorted[sorted.count / 2]) / 255.0
+    }
+
+    /// 한 OCR 줄의 정규화 바운딩 박스(원점 좌하단) 바로 바깥 가장자리 테두리만 샘플해
+    /// 배경 대표색을 구한다. 타이트 박스 내부(글자 획일 가능성이 높음)는 제외하고,
+    /// 가장자리 픽셀들의 채널별 중앙값을 사용해 이상치(획이 테두리에 닿은 경우)에 강하다.
+    private static func sampleBackgroundColor(for normalizedBox: CGRect, in buffer: RGBABuffer) -> RGBColor? {
+        let width = buffer.width, height = buffer.height
+        let minX = Int((normalizedBox.minX * CGFloat(width)).rounded(.down))
+        let maxX = Int((normalizedBox.maxX * CGFloat(width)).rounded(.up))
+        // Vision bbox는 좌하단 원점, 버퍼는 이미지 맨 위가 0행이므로 y를 뒤집는다.
+        let topY = Int(((1 - normalizedBox.maxY) * CGFloat(height)).rounded(.down))
+        let bottomY = Int(((1 - normalizedBox.minY) * CGFloat(height)).rounded(.up))
+
+        let marginX = max(2, (maxX - minX) / 10)
+        let marginY = max(2, (bottomY - topY) / 6)
+        let outerMinX = max(0, minX - marginX)
+        let outerMaxX = min(width - 1, maxX + marginX)
+        let outerTopY = max(0, topY - marginY)
+        let outerBottomY = min(height - 1, bottomY + marginY)
+        guard outerMaxX > outerMinX, outerBottomY > outerTopY else { return nil }
+
+        var reds: [UInt8] = [], greens: [UInt8] = [], blues: [UInt8] = []
+
+        func sample(_ x: Int, _ y: Int) {
+            guard x >= 0, x < width, y >= 0, y < height else { return }
+            if x > minX, x < maxX, y > topY, y < bottomY { return } // 타이트 박스 내부(글자) 제외
+            let offset = y * buffer.bytesPerRow + x * buffer.bytesPerPixel
+            guard offset + 2 < buffer.data.count else { return }
+            reds.append(buffer.data[offset])
+            greens.append(buffer.data[offset + 1])
+            blues.append(buffer.data[offset + 2])
+        }
+
+        let xStep = max(1, (outerMaxX - outerMinX) / 24)
+        var x = outerMinX
+        while x <= outerMaxX {
+            sample(x, outerTopY)
+            sample(x, outerBottomY)
+            x += xStep
+        }
+        let yStep = max(1, (outerBottomY - outerTopY) / 12)
+        var y = outerTopY
+        while y <= outerBottomY {
+            sample(outerMinX, y)
+            sample(outerMaxX, y)
+            y += yStep
+        }
+
+        guard let r = median(reds), let g = median(greens), let b = median(blues) else { return nil }
+        return RGBColor(red: r, green: g, blue: b)
+    }
+
+    /// 캡처 이미지를 한 번만 픽셀 버퍼로 만들고, OCR 줄마다 한 번씩만 배경색을 샘플한다.
+    /// 추출 실패(샘플 없음 등)한 줄은 결과에서 빠지며, 호출 쪽이 중립색으로 대체한다.
+    static func sampleBackgroundColors(in image: CGImage, lines: [OCRLine]) -> [Int: RGBColor] {
+        guard let buffer = makeRGBABuffer(image) else { return [:] }
+        var result: [Int: RGBColor] = [:]
+        for line in lines {
+            if let color = sampleBackgroundColor(for: line.boundingBox, in: buffer) {
+                result[line.id] = color
+            }
+        }
+        return result
+    }
 }
