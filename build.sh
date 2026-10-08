@@ -59,9 +59,81 @@ xcrun swiftc \
   -framework NaturalLanguage \
   -framework UniformTypeIdentifiers \
   -framework ApplicationServices \
+  -framework SafariServices \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" \
   "$ROOT_DIR"/Sources/*.swift
+
+# 브라우저 번역: Chrome·Whale 네이티브 메시징 도우미, 압축 해제용 확장, Safari 웹 확장(.appex)
+APP_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT_DIR/Info.plist")"
+APP_BUILD="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$ROOT_DIR/Info.plist")"
+BROWSER_DIR="$ROOT_DIR/BrowserExtension"
+HELPER_ID="com.local.screentranslator.browserhost"
+SAFARI_APPEX="$APP_BUNDLE/Contents/PlugIns/SMTSafariExtension.appex"
+SAFARI_ID="com.local.screentranslator.safari-extension"
+SAFARI_ENTITLEMENTS="$ROOT_DIR/SafariExtension/SafariExtension.entitlements"
+
+echo "==> 브라우저 도우미 컴파일 (SMTBrowserHost)"
+mkdir -p "$APP_BUNDLE/Contents/Helpers"
+xcrun swiftc \
+  -O \
+  -swift-version 5 \
+  -target "$SWIFT_TARGET" \
+  -sdk "$SDK_PATH" \
+  -module-name SMTBrowserHost \
+  -framework AppKit \
+  -framework Security \
+  -o "$APP_BUNDLE/Contents/Helpers/SMTBrowserHost" \
+  "$BROWSER_DIR/NativeHost/main.swift" \
+  "$ROOT_DIR/Sources/BrowserProtocol.swift"
+
+echo "==> 브라우저 확장 파일 준비 (버전 $APP_VERSION)"
+ICON_DIR="$BUILD_DIR/browser-icons"
+rm -rf "$ICON_DIR"
+mkdir -p "$ICON_DIR"
+for size in 16 32 48 128; do
+  sips -z "$size" "$size" "$ROOT_DIR/Resources/AppIcon-source.png" --out "$ICON_DIR/icon$size.png" >/dev/null
+done
+# stage_extension <대상 폴더> <manifest 원본>
+stage_extension() {
+  local dest="$1" manifest="$2"
+  mkdir -p "$dest/icons"
+  cp "$BROWSER_DIR/shared/background.js" "$BROWSER_DIR/shared/content.js" \
+     "$BROWSER_DIR/shared/popup.html" "$BROWSER_DIR/shared/popup.js" "$BROWSER_DIR/shared/popup.css" "$dest/"
+  cp "$ICON_DIR"/icon*.png "$dest/icons/"
+  sed "s/__SMT_VERSION__/$APP_VERSION/" "$manifest" > "$dest/manifest.json"
+  plutil -convert json -o /dev/null "$dest/manifest.json"
+}
+stage_extension "$APP_BUNDLE/Contents/Resources/BrowserExtension/Chromium" "$BROWSER_DIR/chromium/manifest.json"
+
+echo "==> Safari 웹 확장(.appex) 컴파일"
+mkdir -p "$SAFARI_APPEX/Contents/MacOS" "$SAFARI_APPEX/Contents/Resources"
+xcrun swiftc \
+  -O \
+  -swift-version 5 \
+  -target "$SWIFT_TARGET" \
+  -sdk "$SDK_PATH" \
+  -parse-as-library \
+  -application-extension \
+  -module-name SMTSafariExtension \
+  -framework Foundation \
+  -framework AppKit \
+  -framework SafariServices \
+  -framework Translation \
+  -framework Vision \
+  -framework NaturalLanguage \
+  -Xlinker -e -Xlinker _NSExtensionMain \
+  -o "$SAFARI_APPEX/Contents/MacOS/SMTSafariExtension" \
+  "$ROOT_DIR/SafariExtension/SafariWebExtensionHandler.swift" \
+  "$ROOT_DIR/Sources/BrowserEngineCore.swift" \
+  "$ROOT_DIR/Sources/BrowserProtocol.swift" \
+  "$ROOT_DIR/Sources/Models.swift" \
+  "$ROOT_DIR/Sources/ImageTextRecognizer.swift"
+cp "$ROOT_DIR/SafariExtension/Info.plist" "$SAFARI_APPEX/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$SAFARI_APPEX/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD" "$SAFARI_APPEX/Contents/Info.plist"
+plutil -lint "$SAFARI_APPEX/Contents/Info.plist" >/dev/null
+stage_extension "$SAFARI_APPEX/Contents/Resources" "$BROWSER_DIR/safari/manifest.json"
 
 echo "==> 리소스/Info.plist/프레임워크 복사"
 cp "$ROOT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
@@ -100,6 +172,13 @@ codesign "${SIGN_ARGS[@]}" --preserve-metadata=entitlements "$FW/Versions/B/XPCS
 codesign "${SIGN_ARGS[@]}" "$FW/Versions/B/Autoupdate"
 codesign "${SIGN_ARGS[@]}" "$FW/Versions/B/Updater.app"
 codesign "${SIGN_ARGS[@]}" "$FW"
+
+echo "==> 브라우저 도우미·Safari 확장 서명"
+# 도우미: 권한 없음(hardened runtime). 앱 엔진은 이 식별자 + 같은 팀 서명만 연결을 받는다.
+codesign "${SIGN_ARGS[@]}" --identifier "$HELPER_ID" "$APP_BUNDLE/Contents/Helpers/SMTBrowserHost"
+# Safari 확장: 앱 샌드박스만(앱 그룹·임시 예외 없음)
+plutil -lint "$SAFARI_ENTITLEMENTS" >/dev/null
+codesign "${SIGN_ARGS[@]}" --entitlements "$SAFARI_ENTITLEMENTS" --identifier "$SAFARI_ID" "$SAFARI_APPEX"
 
 echo "==> 앱 서명 (identity: $SIGN_IDENTITY, identifier: $BUNDLE_ID, entitlements: Apple Events)"
 plutil -lint "$ENTITLEMENTS" >/dev/null

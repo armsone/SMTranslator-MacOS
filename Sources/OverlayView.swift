@@ -204,12 +204,8 @@ final class OverlayBorderView: NSView {
     }
 }
 
-/// 헤더 끌기 공통 처리. 마우스 다운 뒤 실제로 1pt라도 움직인 첫 끌기 이벤트에서만
-/// onWillMove를 부르고(창이 움직이기 전) 그 이벤트로 네이티브 performDrag(with:)를 시작한다.
-/// 움직이지 않고 놓은 클릭은 아무것도 부르지 않는다. didMove 관찰·폴링 없이 이 한 지점에서만 이동을 감지한다.
-/// onWillMove는 이 첫 이벤트 안에서 동기로 실행되므로 값싼 작업(숨김·세대 무효화)만 해야 하고,
-/// 무거운 정리는 호출 측이 onDragFinished(mouseUp)로 미룬다.
-/// 마우스 다운이 더블클릭(clickCount == 2)이면 onDoubleClick(겹친 창에 맞추기)을 부르고 이동을 시작하지 않는다.
+/// 헤더 끌기 공통 처리. onWillMove는 실제로 움직인 첫 이벤트 안에서 동기로 실행되므로 값싼 작업만 해야 하며,
+/// 무거운 정리는 다음 명시적 동작(mouseUp)으로 미룬다.
 enum HeaderDrag {
     @MainActor
     static func begin(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?,
@@ -229,10 +225,8 @@ enum HeaderDrag {
             let point = window.convertPoint(toScreen: event.locationInWindow)
             guard point != start else { continue }
             onWillMove?()
-            // 첫 이벤트까지 움직인 만큼 창을 맞춰 커서와 창의 상대 위치를 유지한 채 창 서버 이동에 넘긴다.
-            let origin = window.frame.origin
-            window.setFrameOrigin(NSPoint(x: origin.x + point.x - start.x, y: origin.y + point.y - start.y))
-            window.performDrag(with: event)
+            // performDrag(with:)는 파라미터가 마우스 다운 "원본" 이벤트여야 한다는 API 계약 때문에 mouseDown을 그대로 넘긴다.
+            window.performDrag(with: mouseDown)
             return
         }
     }
@@ -332,9 +326,20 @@ final class HeaderBackgroundView: NSView {
         layer?.cornerRadius = OverlayGeometry.cornerRadius
         layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         appearance = NSAppearance(named: .darkAqua)
+        // 창을 끌 때 내용은 전혀 바뀌지 않는데도, SwiftUI 툴바·제목줄·AIBI 숨김 표면이 각자
+        // 레이어라서 WindowServer가 매 프레임 따로 합성한다. 이 서브트리를 한 번만 비트맵으로
+        // 캐싱해(shouldRasterize) 비투명 창을 끄는 동안의 프레임당 합성 비용을 줄인다.
+        // 캡처 영역(interiorView)은 번역 스트리밍 중 내용이 계속 바뀌므로 묶지 않는다.
+        layer?.shouldRasterize = true
+        layer?.rasterizationScale = NSScreen.main?.backingScaleFactor ?? 2
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        layer?.rasterizationScale = window?.backingScaleFactor ?? layer?.rasterizationScale ?? 2
+    }
 
     /// 툴바의 SwiftUI 컨트롤이 소비하지 않은 빈 곳 클릭이 여기로 오면 창을 이동한다.
     var isDragEnabled = true

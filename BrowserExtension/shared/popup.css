@@ -1,0 +1,18 @@
+:root { color-scheme: light dark; }
+body { width: 300px; margin: 0; padding: 12px; font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+header { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+header strong { flex: 1; }
+.pill { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: rgba(127,127,127,.18); }
+.pill.ok { background: rgba(52,199,89,.22); }
+.pill.bad { background: rgba(255,59,48,.22); }
+section p { margin: 0 0 10px; line-height: 1.45; }
+.row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.buttons { display: flex; gap: 6px; margin-bottom: 10px; }
+.buttons button { flex: 1; }
+button { padding: 5px 8px; font: inherit; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+button.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.status { margin: 10px 0 0; color: GrayText; min-height: 1em; }
+.error { margin: 6px 0 0; color: #ff453a; line-height: 1.4; }
+footer { margin-top: 10px; font-size: 11px; color: GrayText; }

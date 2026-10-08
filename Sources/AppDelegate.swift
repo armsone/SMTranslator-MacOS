@@ -54,8 +54,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DockVisibilityStore.shared.applyInitial()
         loginItem.applyInitialDefaultIfNeeded()
         updater.start()
+        // 브라우저 번역 엔진 연결(허용했거나 브라우저 도우미가 실행한 경우에만 연다)
+        BrowserIntegration.shared.applicationDidLaunch()
         writeDiagnostics()
 
+        // 브라우저 도우미가 엔진으로 실행했으면 화면 번역 창을 띄우지 않고 메뉴 막대에서만 대기한다.
+        guard !BrowserIntegration.shared.launchedByBrowser else { return }
         // 실행 시에는 자동 캡처/번역/권한 요청을 하지 않고 창만 대기 상태로 보여준다.
         overlay.show(activate: true)
     }
@@ -77,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        BrowserIntegration.shared.applicationWillTerminate()
         viewModel.stop()
         AppModel.shared.closeDocument()
         hotKey?.unregister()
@@ -171,6 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         methodItem.submenu = backendMenu()
         menu.addItem(methodItem)
         menu.addItem(item("설정…", #selector(showSettings), symbol: "gearshape"))
+        menu.addItem(item("브라우저 번역…", #selector(showBrowserSetup), symbol: "globe"))
 
         menu.addItem(.separator())
         let dockItem = item("Dock에 아이콘 표시", #selector(toggleDockIcon), symbol: "dock.rectangle")
@@ -384,6 +390,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MailWindowCoordinator.shared.showSettings()
     }
 
+    @objc private func showBrowserSetup() {
+        BrowserSetupWindowController.shared.show()
+    }
+
     @objc private func toggleDockIcon() {
         DockVisibilityStore.shared.showDockIcon.toggle()
     }
@@ -510,6 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "mailHotKey=\(mailHotKey?.statusDescription ?? "none")",
             "mailToolbarButton=\(MailToolbarButton.shared.isEnabled)",
             "translationBackend=\(TranslationBackendStore.shared.backend.rawValue)",
+            "browserBridgeEnabled=\(BrowserIntegration.shared.isEnabled) launchedByBrowser=\(BrowserIntegration.shared.launchedByBrowser)",
             "updater=\(updater.statusDescription)",
             "feedURL=\(info["SUFeedURL"] as? String ?? "none")",
             "publicKeyPresent=\(!((info["SUPublicEDKey"] as? String) ?? "").isEmpty)"
