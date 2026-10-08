@@ -58,10 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BrowserIntegration.shared.applicationDidLaunch()
         writeDiagnostics()
 
-        // 브라우저 도우미가 엔진으로 실행했으면 화면 번역 창을 띄우지 않고 메뉴 막대에서만 대기한다.
-        guard !BrowserIntegration.shared.launchedByBrowser else { return }
-        // 실행 시에는 자동 캡처/번역/권한 요청을 하지 않고 창만 대기 상태로 보여준다.
-        overlay.show(activate: true)
+        // 모든 실행 경로(콜드/수동/로그인/브라우저)에서 화면 번역 창은 자동으로 띄우지 않는다.
+        // 메뉴·단축키·Dock/Finder 재실행(reopen) 등 명시적 동작에서만 overlay.show가 호출된다.
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
