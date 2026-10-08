@@ -112,18 +112,40 @@ enum CaptureService {
         }
     }
 
-    /// Vision을 이용해 지정 언어로 텍스트 인식. 각 줄의 텍스트와 캡처 영역 내부 기준
+    /// Vision을 이용해 텍스트 인식. 각 줄의 텍스트와 캡처 영역 내부 기준
     /// 정규화 바운딩 박스(원점 좌하단, 0...1)를 위→아래 순서로 정렬해 반환한다.
-    static func recognizeText(in image: CGImage, language: AppLanguage) throws -> [OCRLine] {
+    /// 원문 언어를 직접 골랐으면 그 언어로 고정하고, 자동 인식이면 Vision이 알맞은 인식 모델·언어 보정을
+    /// 고르게 하며(automaticallyDetectsLanguage) 우선순위 목록은 이 기기가 지원하는 언어만 넘긴다.
+    static func recognizeText(in image: CGImage, source: SourceSelection) throws -> [OCRLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
-        request.recognitionLanguages = [language.visionRecognitionCode]
-
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
-        try handler.perform([request])
+        if let language = source.language {
+            request.recognitionLanguages = [language.visionRecognitionCode]
+            try handler.perform([request])
+        } else {
+            request.automaticallyDetectsLanguage = true
+            let supported = Set((try? request.supportedRecognitionLanguages()) ?? [])
+            let preferred = SourceSelection.automaticRecognitionCodes.filter(supported.contains)
+            if !preferred.isEmpty { request.recognitionLanguages = preferred }
+            do {
+                try handler.perform([request])
+            } catch where !preferred.isEmpty {
+                // 우선순위 목록 조합을 받아들이지 않으면 목록 없이 자동 인식만으로 한 번 더 시도한다.
+                let fallback = VNRecognizeTextRequest()
+                fallback.recognitionLevel = .accurate
+                fallback.usesLanguageCorrection = true
+                fallback.automaticallyDetectsLanguage = true
+                try handler.perform([fallback])
+                return sortedLines(fallback.results)
+            }
+        }
+        return sortedLines(request.results)
+    }
 
-        guard let observations = request.results else { return [] }
+    private static func sortedLines(_ observations: [VNRecognizedTextObservation]?) -> [OCRLine] {
+        guard let observations else { return [] }
         let sorted = observations.sorted { $0.boundingBox.origin.y > $1.boundingBox.origin.y }
         return sorted.enumerated().compactMap { index, observation in
             guard let text = observation.topCandidates(1).first?.string else { return nil }

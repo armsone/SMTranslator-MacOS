@@ -7,6 +7,7 @@ struct AISettingsView: View {
     @State private var accounts = AIBIAccounts.shared
     @ObservedObject private var diagnostics = AIBIDiagnosticsStore.shared
     @State private var methods = TranslationBackendStore.shared
+    @State private var dockVisibility = DockVisibilityStore.shared
     @State private var mailButtonEnabled = MailToolbarButton.shared.isEnabled
     @State private var confirmClear = false
 
@@ -28,6 +29,14 @@ struct AISettingsView: View {
                 Text("번역 방식")
             } footer: {
                 Text("화면 번역과 메일 번역이 같은 방식을 씁니다. 기본값은 Mac 기본 번역입니다. Apple Intelligence 우선은 macOS 26.4 이상에서만 고를 수 있습니다. ChatGPT·Claude·Gemini는 고르기만 해서는 아무것도 보내지 않으며, 번역을 실행할 때만 텍스트를 보냅니다. 다른 방식으로 자동 대체하지 않습니다.")
+            }
+
+            Section {
+                Toggle("Dock에 아이콘 표시", isOn: $dockVisibility.showDockIcon)
+            } header: {
+                Text("Dock")
+            } footer: {
+                Text("기본값은 꺼짐이며, 메뉴 막대 아이콘만으로 앱을 사용합니다. 켜면 Dock에도 아이콘이 나타나며, 메뉴 막대의 'Dock에 아이콘 표시'와 값을 공유합니다. 창·단축키·Mail 연동·설정은 두 경우 모두 그대로 동작합니다.")
             }
 
             Section {

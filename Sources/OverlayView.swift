@@ -207,7 +207,18 @@ final class OverlayBorderView: NSView {
 /// 헤더 끌기 공통 처리. 마우스 다운 뒤 실제로 1pt라도 움직인 첫 끌기 이벤트에서만
 /// onWillMove를 부르고(창이 움직이기 전) 그 이벤트로 네이티브 performDrag(with:)를 시작한다.
 /// 움직이지 않고 놓은 클릭은 아무것도 부르지 않는다. didMove 관찰·폴링 없이 이 한 지점에서만 이동을 감지한다.
+/// onWillMove는 이 첫 이벤트 안에서 동기로 실행되므로 값싼 작업(숨김·세대 무효화)만 해야 하고,
+/// 무거운 정리는 호출 측이 onDragFinished(mouseUp)로 미룬다.
+/// 마우스 다운 시점에 Shift가 눌려 있으면 onShiftDrag(창에 맞추기 끌기)에 넘기고, 그쪽이 처리하지 않으면(false)
+/// 일반 이동이다. Shift 없는 일반 끌기는 창 목록을 전혀 조회하지 않는다.
 enum HeaderDrag {
+    @MainActor
+    static func begin(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?,
+                      onShiftDrag: ((NSEvent) -> Bool)?) {
+        if mouseDown.modifierFlags.contains(.shift), let onShiftDrag, onShiftDrag(mouseDown) { return }
+        track(from: mouseDown, in: window, onWillMove: onWillMove)
+    }
+
     @MainActor
     static func track(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?) {
         let start = window.convertPoint(toScreen: mouseDown.locationInWindow)
@@ -328,6 +339,8 @@ final class HeaderBackgroundView: NSView {
     /// 실제로 움직이기 시작한 첫 끌기에서 performDrag(with:) 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
     var onDragWillMove: (() -> Void)?
     var onDragFinished: (() -> Void)?
+    /// 마우스 다운 시점에 Shift가 눌려 있을 때만 호출(창에 맞추기 끌기). false면 일반 이동으로 처리한다.
+    var onShiftDrag: ((NSEvent) -> Bool)?
 
     override var isOpaque: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -335,7 +348,7 @@ final class HeaderBackgroundView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isDragEnabled, let window else { return }
-        HeaderDrag.track(from: event, in: window, onWillMove: onDragWillMove)
+        HeaderDrag.begin(from: event, in: window, onWillMove: onDragWillMove, onShiftDrag: onShiftDrag)
         onDragFinished?()
     }
 }
@@ -349,6 +362,8 @@ final class TitleDragStripView: NSView {
     /// 실제로 움직이기 시작한 첫 끌기에서 performDrag(with:) 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
     var onDragWillMove: (() -> Void)?
     var onDragFinished: (() -> Void)?
+    /// 마우스 다운 시점에 Shift가 눌려 있을 때만 호출(창에 맞추기 끌기). false면 일반 이동으로 처리한다.
+    var onShiftDrag: ((NSEvent) -> Bool)?
 
     let closeButton: NSButton
     let primaryButton: NSButton
@@ -437,7 +452,7 @@ final class TitleDragStripView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isDragEnabled, let window else { return }
-        HeaderDrag.track(from: event, in: window, onWillMove: onDragWillMove)
+        HeaderDrag.begin(from: event, in: window, onWillMove: onDragWillMove, onShiftDrag: onShiftDrag)
         onDragFinished?()
     }
 }

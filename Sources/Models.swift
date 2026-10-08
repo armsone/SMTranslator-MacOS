@@ -1,6 +1,7 @@
 import Foundation
 import Translation
 import AppKit
+import NaturalLanguage
 
 /// 앱이 지원하는 언어 목록 (요구사항 최소 4개: 영어, 일본어, 중국어 간체, 한국어)
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -34,6 +35,31 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .korean: return "ko-KR"
         }
     }
+}
+
+/// 화면 번역 원문 언어 선택. 기본값은 자동 인식이며, 언어를 직접 고르면 지금처럼 그 언어로 고정한다.
+/// 번역 언어(대상)는 자동 인식 없이 AppLanguage로만 고른다.
+enum SourceSelection: Hashable, Identifiable {
+    case automatic
+    case language(AppLanguage)
+
+    static let allCases: [SourceSelection] = [.automatic] + AppLanguage.allCases.map { .language($0) }
+
+    /// 자동 인식 때 Vision OCR에 넘기는 우선순위 목록(기기가 지원하는 것만 걸러서 쓴다).
+    static let automaticRecognitionCodes = ["ja-JP", "en-US", "zh-Hans", "ko-KR"]
+
+    var id: String { languageID }
+
+    /// 직접 고른 언어. 자동 인식이면 nil.
+    var language: AppLanguage? {
+        if case .language(let language) = self { return language }
+        return nil
+    }
+
+    /// 외부 AI 요청문에 넘기는 원문 언어 ID. 자동 인식은 "auto"(항목마다 언어를 판별하라고 지시).
+    var languageID: String { language?.rawValue ?? "auto" }
+
+    var displayNameKorean: String { language?.displayNameKorean ?? "자동 인식" }
 }
 
 enum AppStatus: Equatable {
@@ -181,10 +207,118 @@ struct PatchColorSettings: Equatable {
     }
 }
 
-/// .translationTask 클로저에 전달되는 한 번의 스트리밍 배치 번역 작업.
+/// .translationTask 클로저에 전달되는 한 번의 스트리밍 번역 작업.
 /// clientIdentifier는 "세대:줄ID" 형식이라 응답 순서가 달라도 원래 줄(바운딩
-/// 박스)에 정확히 대응된다.
+/// 박스)에 정확히 대응된다. 원문 언어를 직접 고르면 묶음은 하나이고, 자동 인식이면
+/// 감지한 언어별로 묶음을 나눈다(한 묶음에는 한 언어만, 언어 미상 줄은 한 줄씩).
 struct TranslationJob {
     let generation: Int
-    let requests: [TranslationSession.Request]
+    let batches: [[TranslationSession.Request]]
+}
+
+/// 줄·문단 단위 원문 언어 추정(화면 번역 자동 인식, 메일 짧은 단위 보정 공용).
+/// 단어 단위로 쪼개지 않고 한 줄(문단)을 한 언어로 본다. 추정은 완벽하지 않으며,
+/// 정하지 못한 줄은 특정 언어로 억지로 넣지 않고 '언어 미상'으로 둔다.
+enum LanguageDetection {
+    enum Script { case latin, han }
+
+    enum Result: Equatable {
+        /// 글자가 없음(숫자·기호만). 번역하지 않고 그대로 둔다.
+        case noLetters
+        case language(String)
+        /// 짧은 라틴 문자 줄·한자만 있는 줄처럼 같은 캡처(문서)의 다른 줄을 보고 정할 줄. guess는 단독 추정값.
+        case ambiguous(Script, guess: String?)
+        case unknown
+    }
+
+    static func classify(_ text: String) -> Result {
+        var kana = 0, hangul = 0, han = 0, latin = 0, other = 0
+        for scalar in text.unicodeScalars where scalar.properties.isAlphabetic {
+            switch scalar.value {
+            case 0x3040...0x30FF, 0x31F0...0x31FF, 0xFF66...0xFF9F: kana += 1
+            case 0x1100...0x11FF, 0x3130...0x318F, 0xA960...0xA97F, 0xAC00...0xD7AF: hangul += 1
+            case 0x3005, 0x3007, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x3134F: han += 1
+            case 0x41...0x5A, 0x61...0x7A, 0xC0...0x24F, 0x1E00...0x1EFF, 0xFF21...0xFF3A, 0xFF41...0xFF5A: latin += 1
+            default: other += 1
+            }
+        }
+        guard kana + hangul + han + latin + other > 0 else { return .noLetters }
+        // 가나·한글은 각각 일본어·한국어에만 쓰이므로 아주 짧은 줄에서도 강한 단서로 쓴다.
+        if kana > 0 && kana >= hangul { return .language("ja") }
+        if hangul > 0 { return .language("ko") }
+        let sample = String(text.prefix(2000))
+        if han > 0 && han >= latin + other {
+            // 한자만 있는 줄은 일본어·중국어를 가리기 어렵다. 길고 확실할 때만 정하고 나머지는 주변 줄에 맡긴다.
+            let guess = hypothesis(sample, constraints: [.japanese, .simplifiedChinese, .traditionalChinese])
+            if han >= 12, let guess, guess.confidence >= 0.8 { return .language(guess.key) }
+            return .ambiguous(.han, guess: (guess?.confidence ?? 0) >= 0.6 ? guess?.key : nil)
+        }
+        if latin >= other {
+            // 짧은 라틴 문자 줄(메뉴·버튼 이름 등)은 영어 쪽으로 약하게 기울여 추정한다.
+            let guess = hypothesis(sample, hints: latin < 12 ? [.english: 0.5] : [:])
+            if latin >= 12, let guess, guess.confidence >= 0.6 { return .language(guess.key) }
+            return .ambiguous(.latin, guess: (guess?.confidence ?? 0) >= 0.5 ? guess?.key : nil)
+        }
+        if other >= 12, let guess = hypothesis(sample), guess.confidence >= 0.6 { return .language(guess.key) }
+        return .unknown
+    }
+
+    /// 같은 캡처(문서)의 확실한 줄을 근거로 애매한 줄을 정한다. 짧은 라틴 문자 줄은 일본어처럼 다른 문자를
+    /// 쓰는 우세 언어를 물려받지 않고 확실한 라틴 문자 줄의 언어를 따른다. 한자만 있는 줄은 확실한 줄 중
+    /// 일본어만 있으면 일본어, 중국어만 있으면 중국어를 따르며, 둘 다 있거나 근거가 없으면 단독 추정값,
+    /// 그것도 없으면 언어 미상으로 둔다.
+    static func resolveAmbiguous(_ results: [Result]) -> [Result] {
+        var latinCounts: [String: Int] = [:]
+        var hasJapanese = false
+        var chineseKeys: [String: Int] = [:]
+        for case .language(let key) in results {
+            if key == "ja" {
+                hasJapanese = true
+            } else if Locale.Language(identifier: key).languageCode?.identifier == "zh" {
+                chineseKeys[key, default: 0] += 1
+            } else if usesLatinScript(key) {
+                latinCounts[key, default: 0] += 1
+            }
+        }
+        let latinContext = mostFrequent(latinCounts)
+        let hanContext: String? = hasJapanese
+            ? (chineseKeys.isEmpty ? "ja" : nil)
+            : mostFrequent(chineseKeys)
+        return results.map { result in
+            guard case .ambiguous(let script, let guess) = result else { return result }
+            let context = script == .latin ? latinContext : hanContext
+            if let key = context ?? guess { return .language(key) }
+            return .unknown
+        }
+    }
+
+    /// 같은 언어인지(중국어는 간체/번체까지 비교).
+    static func isSameLanguage(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Locale.Language(identifier: lhs), b = Locale.Language(identifier: rhs)
+        guard a.languageCode == b.languageCode else { return false }
+        if a.languageCode?.identifier == "zh" { return a.maximalIdentifier == b.maximalIdentifier }
+        return true
+    }
+
+    static func usesLatinScript(_ key: String) -> Bool {
+        Locale.Language(identifier: Locale.Language(identifier: key).maximalIdentifier).script?.identifier == "Latn"
+    }
+
+    static func normalizedKey(_ raw: String) -> String {
+        Locale.Language(identifier: raw).minimalIdentifier
+    }
+
+    private static func mostFrequent(_ counts: [String: Int]) -> String? {
+        counts.max { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }?.key
+    }
+
+    private static func hypothesis(_ text: String, constraints: [NLLanguage] = [],
+                                   hints: [NLLanguage: Double] = [:]) -> (key: String, confidence: Double)? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.languageConstraints = constraints
+        recognizer.languageHints = hints
+        recognizer.processString(text)
+        guard let (language, confidence) = recognizer.languageHypotheses(withMaximum: 1).first else { return nil }
+        return (normalizedKey(language.rawValue), confidence)
+    }
 }

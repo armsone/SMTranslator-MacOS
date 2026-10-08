@@ -557,7 +557,7 @@ final class AppModel {
     private func groupKey(for text: String) -> String {
         if sourceLanguageID != "auto" { return sourceLanguageID }
         let fallback = documentLanguageKey ?? "auto"
-        guard text.count >= 12 else { return fallback }
+        guard text.count >= 12 else { return shortGroupKey(for: text, fallback: fallback) }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(String(text.prefix(2000)))
         guard let (language, confidence) = recognizer.languageHypotheses(withMaximum: 1).first,
@@ -565,6 +565,20 @@ final class AppModel {
         let key = normalizedKey(language.rawValue)
         if !supportedLanguageIDs.isEmpty, !isSupported(key) { return fallback }
         return key
+    }
+
+    /// 짧은 단위는 대개 문서 언어를 따르지만, 가나·한글 같은 강한 문자 단서는 그대로 쓰고, 일본어처럼 다른 문자를
+    /// 쓰는 문서 속 짧은 라틴 문자 단위는 문서 언어를 물려받지 않는다(정하지 못하면 원문 언어 nil 묶음).
+    private func shortGroupKey(for text: String, fallback: String) -> String {
+        switch LanguageDetection.classify(text) {
+        case .language(let key):
+            return supportedLanguageIDs.isEmpty || isSupported(key) ? key : fallback
+        case .ambiguous(.latin, let guess) where fallback != "auto" && !LanguageDetection.usesLatinScript(fallback):
+            if let guess, supportedLanguageIDs.isEmpty || isSupported(guess) { return guess }
+            return "auto"
+        default:
+            return fallback
+        }
     }
 
     private func normalizedKey(_ raw: String) -> String {

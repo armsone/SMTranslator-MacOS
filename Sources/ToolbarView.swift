@@ -18,13 +18,13 @@ struct ToolbarView: View {
     var body: some View {
         HStack(spacing: 8) {
             Picker("", selection: $viewModel.sourceLanguage) {
-                ForEach(AppLanguage.allCases) { lang in
-                    Text(lang.displayNameKorean).tag(lang)
+                ForEach(SourceSelection.allCases) { source in
+                    Text(source.displayNameKorean).tag(source)
                 }
             }
             .labelsHidden()
             .frame(width: 92)
-            .help("원문 언어")
+            .help("원문 언어. 자동 인식(기본)은 일본어·영어처럼 섞인 화면도 줄마다 언어를 판별해 한 번에 번역합니다.")
 
             Image(systemName: "arrow.right")
                 .font(.caption2)
@@ -104,16 +104,22 @@ struct ToolbarView: View {
             let jobs = viewModel.openJobChannel()
             for await job in jobs {
                 guard viewModel.isJobCurrent(job.generation) else { continue }
-                do {
-                    // 스트리밍 배치: 각 줄 번역이 끝나는 즉시 응답이 도착한다.
-                    for try await response in session.translate(batch: job.requests) {
-                        guard viewModel.isJobCurrent(job.generation) else { break }
-                        viewModel.receiveTranslation(response, generation: job.generation)
+                var failure: Error?
+                // 묶음마다 한 언어만 담긴다. 원문 언어가 nil(자동 인식)인 같은 세션이 묶음마다 언어를 새로 식별한다.
+                for batch in job.batches {
+                    guard viewModel.isJobCurrent(job.generation), !Task.isCancelled else { break }
+                    do {
+                        // 스트리밍 배치: 각 줄 번역이 끝나는 즉시 응답이 도착한다.
+                        for try await response in session.translate(batch: batch) {
+                            guard viewModel.isJobCurrent(job.generation) else { break }
+                            viewModel.receiveTranslation(response, generation: job.generation)
+                        }
+                    } catch {
+                        // 한 묶음이 실패해도 이미 받은 줄은 두고 남은 묶음을 이어 번역한다(다른 방식으로 대체하지 않음).
+                        if failure == nil { failure = error }
                     }
-                    viewModel.finishTranslation(generation: job.generation, error: nil)
-                } catch {
-                    viewModel.finishTranslation(generation: job.generation, error: error)
                 }
+                viewModel.finishTranslation(generation: job.generation, error: failure)
             }
         }
     }

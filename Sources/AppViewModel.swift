@@ -5,17 +5,21 @@ import Translation
 
 /// 캡처·인식·번역 상태 기계.
 /// - 자동/주기 캡처는 없다. 사용자가 주 버튼(또는 Space/Enter, 메뉴)을 누를 때만 1회 캡처한다.
-/// - Enter·주 버튼·메뉴: 번역이 보이면 원본 이미지, 아니면(원본 표시 중·완료 결과 없음) 새로 캡처·번역.
+/// - Enter·주 버튼·메뉴: 번역이 보이면 원문보기(패치만 숨겨 창 아래 실제 화면을 보임), 아니면(원문 표시 중·완료 결과 없음)
+///   새로 캡처·번역. 원문보기는 캡처 이미지를 그리지 않고 새 캡처·인식·번역 요청도 하지 않는다.
 ///   모든 줄 번역이 성공해야만 '원문보기'가 된다.
-/// - Space: 완료된 번역이 있으면 다시 인식·번역하지 않고 보관한 원본 이미지 ↔ 같은 번역 패치를 오간다.
+/// - Space: 완료된 번역이 있으면 다시 인식·번역하지 않고 실제 화면 ↔ 보관한 같은 번역 패치를 오간다.
 ///   완료된 번역이 없을 때만 캡처·번역한다. 보관분은 영역 변경·언어/방식 변경·새 캡처 때 버린다.
 /// - Apple 번역(Mac 기본·Apple Intelligence 우선)은 TranslationSession.translate(batch:) 스트리밍으로 받으며,
 ///   줄이 끝나는 즉시 clientIdentifier → 바운딩 박스로 매핑해 화면에 바로 그린다.
+/// - 원문 '자동 인식'(기본): 줄마다 언어를 판별해 같은 언어끼리 묶고, 원문 언어가 nil인 같은 세션으로 묶음마다
+///   번역한다. 숫자·기호만 있는 줄과 이미 번역 언어인 줄은 요청 없이 원문 그대로 둔다.
 /// - 외부 AI(ChatGPT·Claude·Gemini)는 인식한 줄 텍스트만 큰 묶음(t1…tn → 줄 ID)으로 보내고, 검증된 항목만
 ///   해당 줄의 바운딩 박스에 그린다. 스크린샷 이미지는 보내지 않으며, 다른 방식으로 자동 대체하지 않는다.
 @MainActor
 final class AppViewModel: ObservableObject {
-    @Published var sourceLanguage: AppLanguage = .english {
+    /// 원문 언어. 기본값은 자동 인식(줄마다 언어를 판별해 언어별 묶음으로 번역)이다.
+    @Published var sourceLanguage: SourceSelection = .automatic {
         didSet { if oldValue != sourceLanguage { languagesChanged() } }
     }
     @Published var targetLanguage: AppLanguage = .korean {
@@ -62,7 +66,7 @@ final class AppViewModel: ObservableObject {
     /// 결과(부분 번역 포함)가 화면이나 상태를 덮어쓰지 못하게 한다.
     private var generation = 0
 
-    /// 현재 결과에 대응하는 원본 캡처 이미지. 메모리에만 보관하며 디스크 저장/전송하지 않는다.
+    /// 현재 결과에 대응하는 원본 캡처 이미지(완료 결과 확인용, 화면에 그리지 않음). 메모리에만 보관하며 디스크 저장/전송하지 않는다.
     private var capturedImage: CGImage?
     private var currentLines: [Int: OCRLine] = [:]
     /// 현재 캡처 이미지에서 줄별로 추출한 배경색(캡처당 1회 계산). 추출 실패한 줄은 없다.
@@ -70,11 +74,15 @@ final class AppViewModel: ObservableObject {
     private var receivedLineIDs: Set<Int> = []
     private var hasCompleteResult = false
     private var isDisplayingResult = false
-    /// 완료된 결과에서 지금 원본 이미지를 보이는 중이면 true(Space 전환 방향)
+    /// 완료된 결과에서 지금 패치를 숨겨 실제 화면을 보이는 중이면 true(Space 전환 방향)
     private var isShowingOriginal = false
+    /// 첫 이동 때 값싼 무효화만 하고 미뤄 둔 정리(결과·패치 해제, 버튼·상태 갱신)가 남아 있으면 true
+    private var isRegionCleanupPending = false
 
     private var jobContinuation: AsyncStream<TranslationJob>.Continuation?
     private var pendingJob: TranslationJob?
+    /// 자동 인식에서 감지한 언어가 Apple 번역 지원 언어인지 거르는 목록(방식이 바뀔 때만 다시 읽음).
+    private var autoSupportedLanguageIDs: [String]?
 
     /// 화면 기록 권한 요청 다이얼로그는 실행당 최대 1회, 명시적 캡처 동작에서만 띄운다.
     private var didRequestScreenPermission = false
@@ -109,8 +117,11 @@ final class AppViewModel: ObservableObject {
         overlay.isAdjustable = isAdjustable
         overlay.isAlwaysOnTop = isAlwaysOnTop
         overlay.updatePatchColorSettings(colorSettings)
-        overlay.onRegionChanged = { [weak self] in
-            self?.regionChanged()
+        overlay.onRegionWillChange = { [weak self] in
+            self?.regionWillChange()
+        }
+        overlay.onRegionChangeEnded = { [weak self] in
+            self?.finishRegionChange()
         }
     }
 
@@ -118,6 +129,7 @@ final class AppViewModel: ObservableObject {
 
     /// Return/키패드 Enter, 제목줄 주 버튼, 메뉴: 번역이 보이면 원본, 그 밖에는 새로 캡처·번역.
     func performPrimaryAction() {
+        finishRegionChange()
         guard !isProcessing else { return }
         switch primaryAction {
         case .captureAndTranslate:
@@ -127,9 +139,10 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Space: 완료된 번역이 있으면 보관한 원본 ↔ 같은 번역 패치만 오간다(캡처·인식·번역 요청 없음).
+    /// Space: 완료된 번역이 있으면 실제 화면 ↔ 같은 번역 패치만 오간다(캡처·인식·번역 요청 없음).
     /// 완료된 번역이 없을 때만 캡처·번역한다.
     func performCachedToggle() {
+        finishRegionChange()
         guard !isProcessing else { return }
         guard hasCompleteResult, capturedImage != nil else {
             captureOnce()
@@ -151,17 +164,20 @@ final class AppViewModel: ObservableObject {
 
     /// 제목줄 '취소' 버튼: 진행 중인 외부 AI 번역을 멈춘다(이미 받은 줄은 보이되 완료로 표시하지 않음).
     func cancelExternalTranslation() {
+        finishRegionChange()
         guard isExternalRunning else { return }
         cancelInFlightWork(message: "취소됨")
     }
 
     /// 창이 숨겨질 때: 진행 중 작업만 취소한다(표시된 결과는 유지).
     func windowWillHide() {
+        finishRegionChange()
         cancelInFlightWork(message: "취소됨")
     }
 
     /// 앱 종료 시 진행 중인 작업을 멈춘다.
     func stop() {
+        finishRegionChange()
         cancelInFlightWork(message: nil)
         stopExternalRun()
         jobContinuation?.finish()
@@ -169,6 +185,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func copyTranslatedText() {
+        finishRegionChange()
         let text = translatedPatches.map(\.translatedText).joined(separator: "\n")
         guard !text.isEmpty else { return }
         let pasteboard = NSPasteboard.general
@@ -176,12 +193,13 @@ final class AppViewModel: ObservableObject {
         pasteboard.setString(text, forType: .string)
     }
 
+    /// 원문보기: 번역 패치만 숨겨 창 아래 실제 화면을 그대로 보인다(캡처 이미지를 그리지 않음).
     private func showOriginal() {
-        guard hasCompleteResult, let capturedImage else {
+        guard hasCompleteResult, capturedImage != nil else {
             primaryAction = .captureAndTranslate
             return
         }
-        overlay?.showOriginal(image: capturedImage)
+        overlay?.showOriginal()
         isShowingOriginal = true
         primaryAction = .captureAndTranslate
         status = .showingOriginal
@@ -189,19 +207,32 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - 무효화
 
-    /// 명시적 캡처 뒤 첫 실제 이동/크기 변경(창이 움직이기 직전)에 한 번 호출된다. 기존 결과는 더 이상 아래
-    /// 화면과 맞지 않으므로 원본·번역 보관분과 패치 레이어를 즉시 지우고, 캡처·인식·번역·외부 AI 작업과
-    /// 타이머·대기 작업을 취소한다. 세대를 올려 늦게 도착한 콜백은 모두 무시된다. 자동 재캡처는 하지 않는다.
-    private func regionChanged() {
+    /// 명시적 캡처 뒤 첫 실제 이동/크기 변경(창이 움직이기 직전, 끌기 첫 이벤트)에 한 번 호출된다.
+    /// 끌기를 멈칫하게 하지 않도록 값싼 무효화만 한다: 세대를 올려 늦게 도착한 캡처·OCR·번역·외부 AI 결과가
+    /// 화면·상태를 바꾸지 못하게 하고, 캡처 작업·진행 표시 타이머·대기 작업을 취소한다. 패치 숨김은
+    /// OverlayPanelController가 같은 시점에 한다. @Published·제목줄 상태 변경, 패치 뷰 해제, 웹 보기 정리는
+    /// 하지 않고 finishRegionChange()(mouseUp 한 번) 또는 다음 명시적 동작으로 미룬다. 자동 재캡처는 하지 않는다.
+    private func regionWillChange() {
         guard isProcessing || isDisplayingResult || capturedImage != nil else { return }
         generation += 1
         currentCaptureTask?.cancel()
         currentCaptureTask = nil
-        stopExternalRun()
+        externalStatusTimer?.invalidate()
+        externalStatusTimer = nil
         pendingJob = nil
+        hasCompleteResult = false
+        isRegionCleanupPending = true
+    }
+
+    /// 이동/크기 조절이 끝난 뒤(mouseUp 한 번) 또는 다음 명시적 동작 직전에 미뤄 둔 정리를 한 번 한다.
+    /// 옛 결과를 다시 보이지 않고 지우며, 진행 중이던 외부 AI 실행을 멈추고 '번역'을 다시 누를 수 있게 한다.
+    func finishRegionChange() {
+        guard isRegionCleanupPending else { return }
+        isRegionCleanupPending = false
+        stopExternalRun()
         isProcessing = false
         clearResult()
-        status = .info("영역이 바뀌었습니다. 번역을 눌러주세요")
+        status = .idle
     }
 
     /// 언어 변경: 진행 중 작업만 취소하고 자동 재번역은 하지 않는다. 세션은 다음 캡처 때
@@ -213,6 +244,7 @@ final class AppViewModel: ObservableObject {
     /// 언어·번역 방식 변경 공통: 진행 중 작업을 취소하고 Apple 번역 세션 구성을 다음 캡처 때 다시 만든다.
     /// 보관한 원본·번역은 다른 언어·방식의 결과이므로 지운다(Space로 옛 번역을 다시 보이지 않게).
     private func resetTranslationSetup(message: String) {
+        finishRegionChange()
         cancelInFlightWork(message: message)
         if capturedImage != nil || isDisplayingResult {
             clearResult()
@@ -222,6 +254,7 @@ final class AppViewModel: ObservableObject {
         jobContinuation = nil
         pendingJob = nil
         translationConfiguration = nil
+        autoSupportedLanguageIDs = nil
     }
 
     /// 진행 중 작업만 취소한다. 이미 받은 부분 번역은 보이도록 두되 완료로 표시하지 않는다.
@@ -322,11 +355,20 @@ final class AppViewModel: ObservableObject {
 
     /// 번역 모델 다운로드 안내가 사용자의 캡처 동작 시점에만 나타나도록 세션 구성을
     /// 처음 캡처할 때 만든다. 같은 언어 조합에서는 기존 구성을 그대로 재사용한다.
-    private func prepareTranslationConfigurationIfNeeded(source: AppLanguage, target: AppLanguage, method: TranslationBackend) async -> Bool {
+    private func prepareTranslationConfigurationIfNeeded(generation: Int, source: SourceSelection, target: AppLanguage, method: TranslationBackend) async -> Bool {
         if translationConfiguration != nil { return true }
+        guard let explicitSource = source.language else {
+            // 자동 인식: 원문 언어를 nil로 두면 같은 세션이 묶음마다 언어를 새로 식별한다. 원문을 아직 모르므로
+            // 여기서는 가용성을 확인하지 않는다(모델 다운로드 안내는 이 캡처의 번역 요청 때 시스템이 띄운다).
+            jobContinuation?.finish()
+            jobContinuation = nil
+            translationConfiguration = method.makeConfiguration(source: nil, target: target.localeLanguage)
+            return true
+        }
         let availability = method.makeLanguageAvailability()
-        let result = await availability.status(from: source.localeLanguage, to: target.localeLanguage)
-        guard source == sourceLanguage, target == targetLanguage, method == backend else { return false }
+        let result = await availability.status(from: explicitSource.localeLanguage, to: target.localeLanguage)
+        // 기다리는 사이 영역 이동·취소로 세대가 바뀌었으면 상태·세션 구성을 건드리지 않는다.
+        guard isCurrent(generation), source == sourceLanguage, target == targetLanguage, method == backend else { return false }
         switch result {
         case .unsupported:
             status = .error("\(source.displayNameKorean) → \(target.displayNameKorean) 조합은 이 기기에서 지원되지 않습니다.")
@@ -335,7 +377,7 @@ final class AppViewModel: ObservableObject {
             // 이전 채널은 닫아 둔다. 새 .translationTask 클로저가 시작되면서 채널을 연다.
             jobContinuation?.finish()
             jobContinuation = nil
-            translationConfiguration = method.makeConfiguration(source: source.localeLanguage, target: target.localeLanguage)
+            translationConfiguration = method.makeConfiguration(source: explicitSource.localeLanguage, target: target.localeLanguage)
             return true
         @unknown default:
             status = .error("번역 언어 지원 여부를 확인할 수 없습니다.")
@@ -343,7 +385,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func performCapture(generation: Int, screenFrame: CGRect, ownWindows: [Int], source: AppLanguage, target: AppLanguage, method: TranslationBackend) async {
+    private func performCapture(generation: Int, screenFrame: CGRect, ownWindows: [Int], source: SourceSelection, target: AppLanguage, method: TranslationBackend) async {
         func failed(_ message: String) {
             guard isCurrent(generation) else { return }
             isProcessing = false
@@ -352,8 +394,8 @@ final class AppViewModel: ObservableObject {
             status = .error(message)
         }
 
-        if source != target && !method.isExternal {
-            let ready = await prepareTranslationConfigurationIfNeeded(source: source, target: target, method: method)
+        if source.language != target && !method.isExternal {
+            let ready = await prepareTranslationConfigurationIfNeeded(generation: generation, source: source, target: target, method: method)
             guard isCurrent(generation) else { return }
             guard ready else {
                 isProcessing = false
@@ -378,20 +420,32 @@ final class AppViewModel: ObservableObject {
         status = .recognizing
         let lines: [OCRLine]
         let bgColors: [Int: RGBColor]
+        let detected: [LanguageDetection.Result]
         do {
             // VNImageRequestHandler.perform은 블로킹 호출이므로 메인 액터 밖에서 실행해
             // '텍스트 인식 중' 상태가 실제로 그려지고 UI가 계속 반응하게 한다. 배경색
-            // 추출도 같은 캡처 이미지로 여기서 한 번만(캡처당 1회) 계산한다.
-            (lines, bgColors) = try await Task.detached(priority: .userInitiated) {
-                let lines = try CaptureService.recognizeText(in: image, language: source)
+            // 추출도 같은 캡처 이미지로 여기서 한 번만(캡처당 1회) 계산한다. 자동 인식이면
+            // 줄별 언어 판별도 여기서 메모리 안에서만 한다.
+            (lines, bgColors, detected) = try await Task.detached(priority: .userInitiated) {
+                let lines = try CaptureService.recognizeText(in: image, source: source)
                 let colors = CaptureService.sampleBackgroundColors(in: image, lines: lines)
-                return (lines, colors)
+                let detected = source == .automatic
+                    ? LanguageDetection.resolveAmbiguous(lines.map { LanguageDetection.classify($0.text) })
+                    : []
+                return (lines, colors, detected)
             }.value
         } catch {
             failed("텍스트 인식 오류: \(error.localizedDescription)")
             return
         }
         guard isCurrent(generation) else { return }
+
+        // 자동 인식 + Apple 번역: 감지한 언어가 번역 지원 언어인지 거를 목록을 처음 한 번 읽는다.
+        if source == .automatic, !method.isExternal, autoSupportedLanguageIDs == nil, !lines.isEmpty {
+            let supported = await method.makeLanguageAvailability().supportedLanguages
+            guard isCurrent(generation), method == backend else { return }
+            autoSupportedLanguageIDs = supported.map(\.minimalIdentifier)
+        }
 
         if lines.isEmpty {
             // 인식 결과가 없으면 원문보기로 바꾸지 않는다.
@@ -409,7 +463,7 @@ final class AppViewModel: ObservableObject {
         isDisplayingResult = true
         overlay?.beginTranslationDisplay()
 
-        if source == target {
+        if source.language == target {
             for line in lines {
                 appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
             }
@@ -417,16 +471,67 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        // 자동 인식: 글자가 없는 줄(숫자·기호)과 이미 번역 언어인 줄은 번역 요청 없이 원문 그대로 둔다.
+        /// 자동 인식에서 번역할 언어를 정한 줄. 언어 미상(또는 지원 목록에 없는) 줄은 넣지 않는다.
+        var languageByLine: [Int: String] = [:]
+        if source == .automatic {
+            for (line, result) in zip(lines, detected) {
+                switch result {
+                case .noLetters:
+                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
+                case .language(let key) where LanguageDetection.isSameLanguage(key, target.rawValue):
+                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
+                case .language(let key) where isAutoSupported(key):
+                    languageByLine[line.id] = key
+                default:
+                    break
+                }
+            }
+            if receivedLineIDs.count == currentLines.count {
+                completeIfAllReceived()
+                return
+            }
+        }
+
         if let provider = method.provider {
             startExternal(provider: provider, generation: generation, source: source, target: target)
             return
         }
 
-        status = .translating(done: 0, total: lines.count)
-        let requests = lines.map {
-            TranslationSession.Request(sourceText: $0.text, clientIdentifier: "\(generation):\($0.id)")
+        status = .translating(done: receivedLineIDs.count, total: lines.count)
+        let pendingLines = lines.filter { !receivedLineIDs.contains($0.id) }
+        func request(_ line: OCRLine) -> TranslationSession.Request {
+            TranslationSession.Request(sourceText: line.text, clientIdentifier: "\(generation):\(line.id)")
         }
-        submit(TranslationJob(generation: generation, requests: requests))
+        let batches: [[TranslationSession.Request]]
+        if source == .automatic {
+            // 감지한 언어별로 읽는 순서대로 한 묶음씩 만든다(같은 언어는 한 번에 보내 속도를 유지).
+            // 언어를 정하지 못한 줄은 다른 언어와 섞이지 않도록 한 줄씩 따로 보낸다.
+            var grouped: [[TranslationSession.Request]] = []
+            var groupIndex: [String: Int] = [:]
+            for line in pendingLines {
+                guard let key = languageByLine[line.id] else {
+                    grouped.append([request(line)])
+                    continue
+                }
+                if let index = groupIndex[key] {
+                    grouped[index].append(request(line))
+                } else {
+                    groupIndex[key] = grouped.count
+                    grouped.append([request(line)])
+                }
+            }
+            batches = grouped
+        } else {
+            batches = [pendingLines.map(request)]
+        }
+        submit(TranslationJob(generation: generation, batches: batches))
+    }
+
+    /// 감지한 언어가 이 방식의 Apple 번역 지원 언어인지. 목록을 읽지 못했으면 거르지 않는다.
+    private func isAutoSupported(_ key: String) -> Bool {
+        guard let ids = autoSupportedLanguageIDs, !ids.isEmpty else { return true }
+        return ids.contains { LanguageDetection.isSameLanguage($0, key) }
     }
 
     // MARK: - .translationTask 연동 (스트리밍 배치)
@@ -471,7 +576,8 @@ final class AppViewModel: ObservableObject {
         status = .translating(done: receivedLineIDs.count, total: currentLines.count)
     }
 
-    /// 스트림이 끝났을 때 호출된다. 모든 줄이 성공했을 때만 '완료'·'원문보기'가 된다.
+    /// 작업의 모든 묶음 스트림이 끝났을 때 한 번 호출된다(error는 실패한 첫 묶음의 오류).
+    /// 모든 줄이 성공했을 때만 '완료'·'원문보기'가 되며, 이미 받은 줄은 실패해도 지우지 않는다.
     func finishTranslation(generation: Int, error: Error?) {
         guard isCurrent(generation) else { return }
         if let error {
@@ -495,7 +601,7 @@ final class AppViewModel: ObservableObject {
 
     /// 인식한 줄을 읽는 순서대로 큰 묶음(최대 150줄·9,000자)으로 보낸다. 줄마다 따로 보내지 않는다.
     /// 메일과 같은 규칙: 누락 줄 1회 재요청, 형식 오류 1회·Gemini 일시 오류 1회 재요청, 한 번 실행에 최대 4회 요청.
-    private func startExternal(provider: AIProvider, generation: Int, source: AppLanguage, target: AppLanguage) {
+    private func startExternal(provider: AIProvider, generation: Int, source: SourceSelection, target: AppLanguage) {
         externalFailedLineIDs = []
         externalMissingAttempts = [:]
         externalRunsInAction = 0
@@ -516,7 +622,7 @@ final class AppViewModel: ObservableObject {
         currentLines.keys.sorted().filter { !receivedLineIDs.contains($0) && !externalFailedLineIDs.contains($0) }
     }
 
-    private func runNextExternalBatch(provider: AIProvider, generation: Int, source: AppLanguage, target: AppLanguage) {
+    private func runNextExternalBatch(provider: AIProvider, generation: Int, source: SourceSelection, target: AppLanguage) {
         guard isCurrent(generation) else { return }
         // 한 묶음 상한보다 긴 줄은 보내지 않는다(자르거나 다른 방식으로 대체하지 않음).
         for id in pendingExternalLineIDs where (currentLines[id]?.text.count ?? 0) > ExternalTranslation.maxBatchCharacters {
@@ -583,7 +689,7 @@ final class AppViewModel: ObservableObject {
     }
 
     /// 입력 직전에 한 번 호출된다. 아직 받지 못한 줄을 읽는 순서대로 묶는다.
-    private func makeExternalBatch(source: AppLanguage, target: AppLanguage) -> ExternalBatch? {
+    private func makeExternalBatch(source: SourceSelection, target: AppLanguage) -> ExternalBatch? {
         var items: [ExternalBatchItem] = []
         var characters = 0
         for id in pendingExternalLineIDs {
@@ -599,7 +705,7 @@ final class AppViewModel: ObservableObject {
         }
         guard !items.isEmpty else { return nil }
         let responseToken = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
-        let prompt = ExternalTranslation.makePrompt(items: items, sourceID: source.rawValue, targetID: target.rawValue,
+        let prompt = ExternalTranslation.makePrompt(items: items, sourceID: source.languageID, targetID: target.rawValue,
                                                     responseToken: responseToken,
                                                     correctingFormat: externalFormatRetryCount > 0, content: .screen)
         return ExternalBatch(items: items, prompt: prompt, responseToken: responseToken)

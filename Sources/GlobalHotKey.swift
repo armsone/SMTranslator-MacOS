@@ -11,6 +11,13 @@ final class GlobalHotKey {
     nonisolated static let displayString = "⌃⌥⇧⌘T"
     nonisolated static let mailDisplayString = "⌃⌥⇧⌘M"
 
+    /// 메뉴 항목 keyEquivalent 표기용(실제 등록은 Carbon RegisterEventHotKey로 별도 수행됨)
+    nonisolated static let screenKeyEquivalent = "t"
+    nonisolated static let mailKeyEquivalent = "m"
+    nonisolated static let hotKeyModifierMask: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+    nonisolated static let screenModifierMask = hotKeyModifierMask
+    nonisolated static let mailModifierMask = hotKeyModifierMask
+
     private static let signature: OSType = 0x5354_524E // 'STRN'
     nonisolated static let screenHotKeyID: UInt32 = 1
     nonisolated static let mailHotKeyID: UInt32 = 2
