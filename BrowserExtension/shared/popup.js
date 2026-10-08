@@ -1,11 +1,14 @@
 "use strict";
-// SMT 웹 번역 팝업: 동의, 번역 언어, 이 페이지 번역, 원문/번역 전환, 사이트 자동 번역, 이미지 번역, 상태.
+// SMT 웹 번역 팝업: 동의, 번역 언어, 번역(전역 자동 번역 켜기), 원문 보기(전역 자동 번역 끄기), 이미지 번역, 상태.
 
 const api = globalThis.browser ?? globalThis.chrome;
+const IS_SAFARI = api.runtime.getURL("").startsWith("safari-web-extension:");
+const ALL_URLS = "<all_urls>";
 const $ = (id) => document.getElementById(id);
 let tabId = null;
 let origin = null;
 let current = null;
+let notice = ""; // 번역 버튼 결과 안내(새로 고침해도 다른 오류가 없으면 계속 보인다)
 
 function showError(message) {
   $("error").textContent = message || "";
@@ -35,12 +38,16 @@ function render(state) {
   $("main").hidden = !state.settings.consent;
   $("target").value = state.settings.target;
   $("images").checked = state.settings.images;
-  $("auto").checked = state.siteEnabled && state.permitted;
-  $("auto").disabled = !origin;
   $("translate").disabled = tabId === null;
-  $("original").textContent = state.page?.view === "original" ? "번역 보기" : "원문 보기";
-  $("original").disabled = !state.page;
-  if (state.siteEnabled && !state.permitted) $("autoLabel").textContent = "이 사이트 자동 번역 (사이트 접근 권한 필요)";
+  // 이 탭이 아직 번역되지 않았어도 전역 자동 번역이 켜져 있으면 전역으로 끌 수 있어야 한다.
+  $("original").disabled = !state.page && !state.settings.automaticEnabled;
+  if (state.settings.automaticEnabled) {
+    $("autoStatus").textContent = "자동 번역 켜짐 · 열린 탭과 이후 여는 http/https 페이지에 적용 · 원문 보기로 전체 끄기";
+  } else if (!IS_SAFARI && !state.grant) {
+    $("autoStatus").textContent = "자동 번역 꺼짐 · 번역을 누르면 모든 웹사이트 접근 권한을 묻습니다";
+  } else {
+    $("autoStatus").textContent = "자동 번역 꺼짐 · 번역을 누르면 시작";
+  }
 
   let status = "";
   if (state.settings.consent && state.engine.ok && !state.engine.enabled) {
@@ -50,7 +57,7 @@ function render(state) {
   } else if (state.page?.error) {
     showError(state.page.error);
   } else {
-    showError("");
+    showError(notice);
   }
   if (state.page) {
     status = `${state.page.status} · 글자 ${state.page.translated}개` + (state.page.imageCount ? ` · 이미지 ${state.page.imageCount}개` : "");
@@ -84,32 +91,33 @@ $("images").addEventListener("change", async (event) => {
   refresh();
 });
 
-$("auto").addEventListener("change", (event) => {
-  const enabled = event.target.checked;
-  if (!origin) return;
-  // 권한 요청은 클릭 처리 안에서 바로 불러야 브라우저 확인 창이 뜬다.
-  const permission = enabled
-    ? Promise.resolve(api.permissions.request({ origins: [`${origin}/*`] }))
-    : Promise.resolve(true);
-  permission.then(async (granted) => {
-    if (!granted) {
-      event.target.checked = false;
-      showError("사이트 접근을 허용하지 않아 자동 번역을 켜지 않았습니다.");
-      return;
-    }
-    await call({ cmd: "setSite", enabled }).catch((e) => showError(e.message));
-    refresh();
-  }, (error) => {
-    event.target.checked = false;
-    showError(error?.message || "권한을 요청하지 못했습니다.");
-  });
-});
-
 $("translate").addEventListener("click", async () => {
-  $("translate").disabled = true;
+  // 권한 요청은 클릭 처리의 첫 동작(어떤 await보다 먼저)이어야 브라우저 확인 창이 뜬다(몰래 켜지 않는다).
+  // 이미 허용했으면 다시 묻지 않고 true. Safari는 사이트별 허용을 Safari 설정이 관리한다.
+  let permission;
   try {
-    await call({ cmd: "translateNow" });
-    $("status").textContent = "번역 중…";
+    permission = IS_SAFARI ? Promise.resolve(true) : Promise.resolve(api.permissions.request({ origins: [ALL_URLS] }));
+  } catch {
+    permission = Promise.resolve(false);
+  }
+  $("translate").disabled = true;
+  notice = "";
+  showError("");
+  try {
+    const granted = (await permission.catch(() => false)) === true;
+    // 실제로 켜졌는지는 배경이 권한을 다시 확인해 정한다(팝업 결과만 믿지 않음).
+    const response = await call({ cmd: "translateNow", automatic: granted });
+    if (response.superseded) {
+      notice = "원문 보기가 먼저 처리되어 번역을 시작하지 않았습니다.";
+    } else if (!response.automatic) {
+      notice = response.restricted
+        ? "모든 웹사이트 접근이 허용되지 않아 자동 번역은 꺼져 있고, 이 페이지는 브라우저 정책상 번역할 수 없습니다."
+        : "모든 웹사이트 접근이 허용되지 않아 자동 번역은 꺼져 있습니다. 이 페이지만 한 번 번역합니다.";
+    } else if (response.restricted) {
+      notice = "자동 번역을 켰습니다. 이 페이지는 브라우저 정책상 번역할 수 없어 다른 일반 웹페이지부터 적용됩니다.";
+    }
+    showError(notice);
+    if (!response.superseded && !response.restricted) $("status").textContent = "번역 중…";
     setTimeout(refresh, 1200);
   } catch (error) {
     showError(error.message);
@@ -119,9 +127,10 @@ $("translate").addEventListener("click", async () => {
 });
 
 $("original").addEventListener("click", async () => {
+  notice = "";
   try {
-    const response = await call({ cmd: "toggleOriginal" });
-    render({ ...current, page: response.page });
+    await call({ cmd: "toggleOriginal" });
+    refresh();
   } catch (error) {
     showError(error.message);
   }

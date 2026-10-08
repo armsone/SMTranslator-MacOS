@@ -60,15 +60,17 @@ struct BrowserSetupView: View {
         let state = integration.registrations[browser] ?? .notRegistered
         return Section {
             LabeledContent("상태", value: state.text)
-            HStack {
-                Button("준비") { integration.prepare(browser) }
-                    .disabled(!integration.isEnabled || state == .browserMissing)
-                Button("확장 관리 열기") { integration.openExtensionsPage(browser) }
-                    .disabled(state == .browserMissing)
-                Spacer()
-                Button("연결 해제") { integration.unregister(browser) }
-                    .disabled(state == .notRegistered || state == .browserMissing)
+            Button {
+                integration.startInstall(browser)
+            } label: {
+                Text("설치 시작").frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(!integration.isEnabled || state == .browserMissing)
+
+            installSteps(browser)
+
             HStack {
                 Text(integration.stagedExtensionURL.path)
                     .font(.caption)
@@ -79,12 +81,41 @@ struct BrowserSetupView: View {
                 Spacer()
                 Button("폴더 보기") { integration.revealStagedExtension() }
                 Button("경로 복사") { integration.copyStagedExtensionPath() }
+                Button("확장 관리 다시 열기") { integration.openExtensionsPage(browser) }
+                    .disabled(state == .browserMissing)
             }
             .controlSize(.small)
+
+            Button("연결 해제") { integration.unregister(browser) }
+                .disabled(state == .notRegistered || state == .browserMissing)
         } header: {
             Text(browser.title)
         } footer: {
-            Text("1) '준비'를 누르면 확장 폴더를 만들고 \(browser.title)에 SMT 연결을 등록합니다. 2) '확장 관리 열기'(\(browser.extensionsPage))에서 개발자 모드를 켜고 '압축해제된 확장 프로그램을 로드합니다'로 위 폴더를 선택합니다. 3) 툴바의 SMT 아이콘에서 동의한 뒤 사용합니다. 스토어 배포 전이라 이 단계는 브라우저에서 직접 확인해야 합니다. SMT를 업데이트한 뒤에는 다시 '준비'하고 확장 관리에서 새로고침하세요.")
+            Text("스토어 배포 전이라 확장 로드는 \(browser.title)에서 직접 확인해야 합니다. '설치 시작'이 실패하면 아래 단계도, 성공 안내도 나오지 않습니다. SMT를 업데이트한 뒤에는 '설치 시작'을 다시 눌러 확장 관리 화면에서 새로고침하세요.")
+        }
+    }
+
+    private func installSteps(_ browser: BrowserIntegration.ChromiumBrowser) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            installStep(1, "gearshape.2", "\(browser.extensionsPage) 화면 오른쪽 위에서 '개발자 모드'를 켜고 '압축해제된 확장 프로그램을 로드합니다'를 누릅니다.")
+            installStep(2, "folder", "폴더 선택 창이 열리면 ⌘⇧G를 눌러 경로 입력창을 띄웁니다.")
+            installStep(3, "doc.on.clipboard", "복사된 경로를 ⌘V로 붙여넣고 엔터를 누릅니다.")
+            installStep(4, "checkmark.circle", "폴더가 선택되면 '선택'을 눌러 확장을 로드합니다.")
+            installStep(5, "puzzlepiece.extension", "툴바의 SMT 아이콘을 눌러 동의하면 사용할 수 있습니다.")
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func installStep(_ number: Int, _ symbol: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle().fill(Color.accentColor.opacity(0.15))
+                Text("\(number)").font(.caption.bold()).foregroundStyle(Color.accentColor)
+            }
+            .frame(width: 22, height: 22)
+            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18)
+            Text(text).font(.callout)
+            Spacer(minLength: 0)
         }
     }
 }

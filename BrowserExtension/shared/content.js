@@ -3,10 +3,13 @@
 //   링크·버튼 등 요소는 그대로라 클릭·접근성이 유지된다.
 // - 이미지 속 글자는 보이는 이미지 영역만 캡처·OCR해 이미지 위에 클릭 통과(pointer-events: none) 덮개로 그린다.
 //   캡처 직전에는 기존 덮개를 숨겨 자기 번역을 다시 읽지 않는다. 결과가 오는 사이 스크롤·이동이 있었으면 버린다.
-// - 자동 번역은 사이트 권한 + 이 사이트 자동 번역을 켠 경우에만, 스크롤·변경이 멈추고 1초 뒤 보이는 부분만 번역한다.
+// - 자동 번역은 전역 자동 번역이 켜져 있고 이 사이트 접근 권한이 있을 때만, 스크롤·변경이 멈추고 1초 뒤 보이는 부분만 번역한다.
+//   전역 자동 번역은 번역 버튼을 누를 때 켜지고, 원문 보기를 누르면 꺼진다(배경 스크립트가 auto 값을 내려준다).
 // - 결과는 항상 텍스트(textContent / nodeValue)로만 넣고 HTML로 해석하지 않는다. 번역 캐시는 메모리에만 둔다.
 (() => {
   "use strict";
+  // 권한 범위(<all_urls>)와 달리 일반 웹페이지(http/https)에서만 동작한다. 파일·브라우저 내부 페이지에서는 아무것도 하지 않는다.
+  if (location.protocol !== "http:" && location.protocol !== "https:") return;
   if (globalThis.__smtWebTranslatorLoaded) return;
   globalThis.__smtWebTranslatorLoaded = true;
 
@@ -35,8 +38,10 @@
     pageGen: 0,   // 이동·언어 변경 때 증가: 이전 결과 모두 무효
     scrollGen: 0, // 스크롤·크기 변경 때 증가: 이전 이미지 결과 무효
     url: location.href,
+    stopEpoch: 0, // 마지막 원문 보기(전역 끄기) 세대: 이보다 오래된 설정·번역 시작 요청은 무시한다
     running: false,
     rerun: false,
+    rerunManual: false,
     timer: 0,
     status: "대기",
     error: "",
@@ -369,6 +374,7 @@
   async function runPass(manual = false) {
     if (state.running) {
       state.rerun = true;
+      if (manual) state.rerunManual = true; // 진행 중인 패스가 끝나면 수동 번역도 그대로 이어서 한다
       return;
     }
     if (!manual && (!state.auto || state.view !== "translated")) return;
@@ -399,8 +405,11 @@
     } finally {
       state.running = false;
       if (state.rerun) {
+        const manualRerun = state.rerunManual;
         state.rerun = false;
-        schedule();
+        state.rerunManual = false;
+        if (manualRerun) runPass(true);
+        else schedule();
       }
     }
   }
@@ -507,6 +516,11 @@
     if (sender.id !== api.runtime.id || !message || typeof message.cmd !== "string") return false;
     switch (message.cmd) {
       case "configure": {
+        // 마지막 원문 보기보다 먼저 시작된 흐름이 늦게 보낸 설정은 자동 번역·번역 시작을 되살리지 못하게 버린다.
+        if (!Number.isFinite(message.epoch) || message.epoch < state.stopEpoch) {
+          sendResponse(snapshot());
+          return false;
+        }
         const targetChanged = typeof message.target === "string" && message.target !== state.target;
         state.auto = message.auto === true;
         state.images = message.images !== false;
@@ -529,8 +543,18 @@
         return false;
       }
       case "toggleOriginal":
-        setView(state.view === "translated" ? "original" : "translated");
-        if (state.view === "translated" && state.auto) schedule();
+        // 원문 보기는 항상 원문으로 되돌리고 이 페이지의 자동 번역을 끈다(다시 켜려면 번역 버튼).
+        // 세대를 올려 이미 보낸 요청의 늦은 응답이 돌아와도 다시 칠하지 않게 한다.
+        // 진행 중인 패스 뒤에 이어 하기로 한 재실행(수동 포함)도 취소한다.
+        if (Number.isFinite(message.epoch)) state.stopEpoch = Math.max(state.stopEpoch, message.epoch);
+        state.auto = false;
+        state.rerun = false;
+        state.rerunManual = false;
+        setObserving(false);
+        clearTimeout(state.timer);
+        state.pageGen += 1;
+        state.scrollGen += 1;
+        setView("original");
         sendResponse(snapshot());
         return false;
       case "state":

@@ -14,11 +14,15 @@ struct OCRRegion: Identifiable {
     let foregroundHex: String
 
     /// 숫자·코드만 있는 등 번역해도 의미가 없는 조각은 오버레이/목록에서 뺀다.
+    /// 한자 한두 글자짜리 말풍선(세로 일본어 만화에 흔함)은 의미가 있을 수 있어 길이만으로 버리지 않고,
+    /// 한글/영문 등 비CJK 짧은 조각만 기존처럼 노이즈로 걸러낸다.
     var hasMeaningfulLetters: Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > 2, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") else { return false }
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") else { return false }
         if trimmed.hasPrefix("\""), trimmed.contains("\":") { return false }
-        return trimmed.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+        guard trimmed.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else { return false }
+        if trimmed.unicodeScalars.contains(where: ImageTextRecognizer.isCJK) { return true }
+        return trimmed.count > 2
     }
 }
 
@@ -28,6 +32,39 @@ enum ImageTextRecognizer {
     static func recognize(_ image: CGImage, assetID: String) async throws -> [OCRRegion] {
         guard image.width >= 24, image.height >= 24,
               Double(image.width) * Double(image.height) <= 120_000_000 else { return [] }
+        try Task.checkCancellation()
+
+        // mac26+에서는 문서 구조(문단) 단위 인식을 먼저 시도해 세로쓰기 줄 순서를 보존한다.
+        // 취소는 그대로 전파하고, 그 외 실패(비어있는 결과 포함)는 기존 Vision 경로로 폴백한다.
+        if #available(macOS 26.0, *) {
+            do {
+                let paragraphs = try await DocumentTextRecognizer.recognizeParagraphs(in: image)
+                if !paragraphs.isEmpty {
+                    return documentRegions(paragraphs, image: image, assetID: assetID)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // 문서 인식 실패(미지원 콘텐츠 등) -> 아래 레거시 경로로 폴백
+            }
+        }
+
+        return try await recognizeLegacy(image, assetID: assetID)
+    }
+
+    /// 문서 인식 결과를 그대로 영역으로 변환한다. 이미 올바른 문단 단위(세로쓰기 줄 순서 포함)로
+    /// 나뉘어 있으므로 레거시 가로 그룹 로직을 다시 적용하지 않는다.
+    @available(macOS 26.0, *)
+    private static func documentRegions(_ paragraphs: [DocumentTextParagraph], image: CGImage, assetID: String) -> [OCRRegion] {
+        paragraphs.prefix(maxRegions).enumerated().map { index, paragraph in
+            let b = paragraph.box
+            let box = CGRect(x: b.minX, y: 1 - b.maxY, width: b.width, height: b.height)
+            let (bg, fg) = sampleColors(of: image, in: box)
+            return OCRRegion(id: "\(assetID)#\(index)", text: paragraph.text, box: box, backgroundHex: bg, foregroundHex: fg)
+        }
+    }
+
+    private static func recognizeLegacy(_ image: CGImage, assetID: String) async throws -> [OCRRegion] {
         try Task.checkCancellation()
 
         let request = VNRecognizeTextRequest()
@@ -111,7 +148,7 @@ enum ImageTextRecognizer {
         return isCJK(a) && isCJK(b)
     }
 
-    private static func isCJK(_ u: Unicode.Scalar) -> Bool {
+    fileprivate static func isCJK(_ u: Unicode.Scalar) -> Bool {
         switch u.value {
         case 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0xFF00...0xFFEF: return true
         default: return false

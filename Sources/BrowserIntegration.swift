@@ -67,9 +67,9 @@ final class BrowserIntegration: ObservableObject {
         var text: String {
             switch self {
             case .browserMissing: return "브라우저가 설치되어 있지 않습니다"
-            case .notRegistered: return "준비 전"
-            case .registered: return "연결 등록됨"
-            case .stale: return "다른 위치의 SMT로 등록됨 — 다시 준비하세요"
+            case .notRegistered: return "설치 시작 전"
+            case .registered: return "설치 준비됨 · 브라우저에서 추가 필요"
+            case .stale: return "다른 위치의 SMT로 등록됨 — 설치 시작을 다시 누르세요"
             }
         }
     }
@@ -194,28 +194,31 @@ final class BrowserIntegration: ObservableObject {
         return .registered
     }
 
-    /// 사용자가 '준비'를 누를 때만 호출된다. 확장을 앱 지원 폴더에 풀고 호스트 매니페스트를 등록한다.
-    func prepare(_ browser: ChromiumBrowser) {
+    /// 사용자가 '설치 시작'을 누를 때만 호출된다. 확장을 앱 지원 폴더에 풀고 호스트 매니페스트를 등록한다.
+    /// 이 단계가 성공했을 때만 경로 복사와 확장 관리 열기를 이어서 한다(실패하면 후속 동작도 성공 안내도 하지 않는다).
+    func startInstall(_ browser: ChromiumBrowser) {
         do {
             guard isEnabled else { throw SetupError("먼저 '브라우저 확장 연결 허용'을 켜 주세요.") }
             guard browser.applicationURL != nil else { throw SetupError("\(browser.title)이(가) 설치되어 있지 않습니다.") }
             guard isInstalledInApplications else {
-                throw SetupError("SMT를 응용 프로그램 폴더로 옮겨 실행한 뒤 다시 준비하세요(등록 경로가 이 앱 위치에 고정됩니다).")
+                throw SetupError("SMT를 응용 프로그램 폴더로 옮겨 실행한 뒤 다시 시작하세요(등록 경로가 이 앱 위치에 고정됩니다).")
             }
             guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
                 throw SetupError("이 SMT 빌드에 브라우저 도우미가 없습니다. 최신 SMT를 설치하세요.")
             }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: browser.dataDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                throw SetupError("\(browser.title)을(를) 한 번 실행해 프로필을 만든 뒤 다시 준비하세요.")
+                throw SetupError("\(browser.title)을(를) 한 번 실행해 프로필을 만든 뒤 다시 시작하세요.")
             }
             try stageExtension()
             try writeHostManifest(for: browser)
             refreshRegistrations()
-            lastMessage = "\(browser.title) 준비 완료. '확장 관리 열기'에서 개발자 모드를 켜고 '압축해제된 확장 프로그램 로드'로 아래 폴더를 선택하세요."
+            copyStagedExtensionPath(announce: false)
+            openExtensionsPage(browser)
+            lastMessage = "\(browser.title) 설치 준비됨 · 브라우저에서 추가 필요. 경로를 복사했고 확장 관리 화면을 열었습니다. 아래 단계를 따라 폴더를 선택해 주세요."
         } catch {
             refreshRegistrations()
-            lastMessage = "\(browser.title) 준비 실패: \((error as? SetupError)?.message ?? error.localizedDescription)"
+            lastMessage = "\(browser.title) 설치 준비 실패: \((error as? SetupError)?.message ?? error.localizedDescription)"
         }
     }
 
@@ -249,16 +252,16 @@ final class BrowserIntegration: ObservableObject {
 
     func revealStagedExtension() {
         guard FileManager.default.fileExists(atPath: stagedExtensionURL.path) else {
-            lastMessage = "아직 준비된 확장 폴더가 없습니다. 먼저 '준비'를 누르세요."
+            lastMessage = "아직 준비된 확장 폴더가 없습니다. 먼저 '설치 시작'을 누르세요."
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([stagedExtensionURL])
     }
 
-    func copyStagedExtensionPath() {
+    func copyStagedExtensionPath(announce: Bool = true) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(stagedExtensionURL.path, forType: .string)
-        lastMessage = "확장 폴더 경로를 복사했습니다."
+        if announce { lastMessage = "확장 폴더 경로를 복사했습니다." }
     }
 
     private func stageExtension() throws {

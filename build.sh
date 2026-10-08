@@ -128,7 +128,8 @@ xcrun swiftc \
   "$ROOT_DIR/Sources/BrowserEngineCore.swift" \
   "$ROOT_DIR/Sources/BrowserProtocol.swift" \
   "$ROOT_DIR/Sources/Models.swift" \
-  "$ROOT_DIR/Sources/ImageTextRecognizer.swift"
+  "$ROOT_DIR/Sources/ImageTextRecognizer.swift" \
+  "$ROOT_DIR/Sources/DocumentTextRecognizer.swift"
 cp "$ROOT_DIR/SafariExtension/Info.plist" "$SAFARI_APPEX/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$SAFARI_APPEX/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD" "$SAFARI_APPEX/Contents/Info.plist"

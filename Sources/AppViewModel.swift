@@ -451,7 +451,7 @@ final class AppViewModel: ObservableObject {
             // 추출도 같은 캡처 이미지로 여기서 한 번만(캡처당 1회) 계산한다. 자동 인식이면
             // 줄별 언어 판별도 여기서 메모리 안에서만 한다.
             (lines, bgColors, detected) = try await Task.detached(priority: .userInitiated) {
-                let lines = try CaptureService.recognizeText(in: image, source: source)
+                let lines = try await CaptureService.recognizeText(in: image, source: source)
                 let colors = CaptureService.sampleBackgroundColors(in: image, lines: lines)
                 let detected = source == .automatic
                     ? LanguageDetection.resolveAmbiguous(lines.map { LanguageDetection.classify($0.text) })

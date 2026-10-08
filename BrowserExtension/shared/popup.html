@@ -29,10 +29,15 @@
       </select>
     </label>
     <div class="buttons">
-      <button id="translate" class="primary">이 페이지 번역</button>
-      <button id="original">원문 보기</button>
+      <button id="translate" class="primary">번역</button>
+      <button id="original" title="원문 보기를 누르면 열려 있는 모든 탭에서 자동 번역이 꺼집니다.">원문 보기</button>
     </div>
-    <label class="check"><input type="checkbox" id="auto"> <span id="autoLabel">이 사이트 자동 번역 (스크롤 멈춘 뒤 1초)</span></label>
+    <p class="hint">번역을 누르면 Chrome·Whale은 '모든 웹사이트' 접근 권한(모든 사이트의 데이터 읽기·변경)을 그 자리에서
+      묻습니다. 이 권한은 다른 사이트로 이동해도 자동 번역을 이어 가고, 이미지 글자 인식을 위해 보이는 탭 화면을 캡처하는 데
+      필요합니다. 실제 번역·캡처는 일반 웹페이지(http/https)에서만 하며 브라우저 내부 페이지·파일·확장 페이지는 건드리지
+      않습니다. 허용하지 않으면 자동 번역 없이 지금 페이지만 한 번 번역합니다. Safari는 Safari 설정의 사이트별 허용을 따릅니다.
+      원문 보기를 누르면 열려 있는 모든 페이지에서 자동 번역이 한 번에 멈춥니다.</p>
+    <p id="autoStatus" class="auto"></p>
     <label class="check"><input type="checkbox" id="images"> 이미지 속 글자도 번역</label>
   </section>
 

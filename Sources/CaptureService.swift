@@ -112,11 +112,35 @@ enum CaptureService {
         }
     }
 
-    /// Vision을 이용해 텍스트 인식. 각 줄의 텍스트와 캡처 영역 내부 기준
-    /// 정규화 바운딩 박스(원점 좌하단, 0...1)를 위→아래 순서로 정렬해 반환한다.
+    /// 텍스트 인식. mac26+에서는 공용 DocumentTextRecognizer로 문서 구조(문단) 단위 인식을
+    /// 먼저 시도해 세로쓰기 등 문단 내 줄 순서를 그대로 보존한다(다시 y좌표로 정렬하거나
+    /// 재묶지 않음). 취소는 그대로 전파하고, 그 외 실패나 빈 결과는 기존 VNRecognizeTextRequest
+    /// 레거시 경로(mac15~25, 또는 문서 인식이 지원하지 않는 콘텐츠)로 폴백한다.
+    static func recognizeText(in image: CGImage, source: SourceSelection) async throws -> [OCRLine] {
+        if #available(macOS 26.0, *) {
+            do {
+                let recognitionLanguages = source.language.map { [$0.localeLanguage] }
+                let paragraphs = try await DocumentTextRecognizer.recognizeParagraphs(in: image, recognitionLanguages: recognitionLanguages)
+                try Task.checkCancellation()
+                if !paragraphs.isEmpty {
+                    return paragraphs.enumerated().map { index, paragraph in
+                        OCRLine(id: index, text: paragraph.text, boundingBox: paragraph.box)
+                    }
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // 문서 인식 실패(미지원 콘텐츠 등) -> 아래 레거시 경로로 폴백
+            }
+        }
+        return try recognizeTextLegacy(in: image, source: source)
+    }
+
+    /// Vision을 이용해 텍스트 인식(mac15~25 및 문서 인식 폴백 경로). 각 줄의 텍스트와 캡처 영역
+    /// 내부 기준 정규화 바운딩 박스(원점 좌하단, 0...1)를 위→아래 순서로 정렬해 반환한다.
     /// 원문 언어를 직접 골랐으면 그 언어로 고정하고, 자동 인식이면 Vision이 알맞은 인식 모델·언어 보정을
     /// 고르게 하며(automaticallyDetectsLanguage) 우선순위 목록은 이 기기가 지원하는 언어만 넘긴다.
-    static func recognizeText(in image: CGImage, source: SourceSelection) throws -> [OCRLine] {
+    private static func recognizeTextLegacy(in image: CGImage, source: SourceSelection) throws -> [OCRLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
