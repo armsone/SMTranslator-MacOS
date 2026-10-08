@@ -62,10 +62,36 @@ struct PatchColorSettingsView: View {
                 set: { viewModel.colorSettings.backgroundOpacity = $0 })
     }
 
+    private var fontStyle: Binding<FontStyle> {
+        Binding(get: { viewModel.colorSettings.fontStyle },
+                set: { viewModel.colorSettings.fontStyle = $0 })
+    }
+
+    private func fontStyleLabel(_ style: FontStyle) -> String {
+        switch style {
+        case .auto: return "자동(기본)"
+        case .gothic: return "고딕"
+        case .myeongjo: return "명조"
+        case .hand: return "손글씨"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("번역문 색상")
                 .font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("글꼴")
+                Picker("글꼴", selection: fontStyle) {
+                    ForEach(FontStyle.allCases, id: \.self) { style in
+                        Text(fontStyleLabel(style)).tag(style)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .help("자동은 원본 글자 획의 두께·규칙성을 가볍게 보고 고릅니다. 정확한 글꼴 식별은 아니며, 애매하면 고딕을 씁니다.")
+            }
 
             Toggle("자동 색상 (캡처 배경에서 추출)", isOn: useAutoColors)
                 .toggleStyle(.checkbox)

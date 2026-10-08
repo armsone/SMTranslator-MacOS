@@ -135,6 +135,8 @@ struct OCRLine: Identifiable {
     let id: Int
     let text: String
     let boundingBox: CGRect
+    /// 원본 글자 획 통계로 추정한 글꼴 갈래("gothic"/"myeongjo"/"hand"). 표본 부족·애매함이면 nil(미판별).
+    var fontStyleHint: String? = nil
 }
 
 /// 0...1 범위 RGB. 캡처 이미지에서 추출한 배경색을 가볍게 들고 다니기 위한 값 타입.
@@ -161,6 +163,8 @@ struct TranslatedPatch: Identifiable {
     let boundingBox: CGRect
     /// 캡처 이미지에서 추출한 원문 줄 배경색. 추출 실패 시 nil(뷰가 중립색으로 대체).
     var autoBackgroundColor: RGBColor?
+    /// 원본 글자 획 통계로 추정한 글꼴 갈래("gothic"/"myeongjo"/"hand"). 표본 부족·애매함이면 nil(미판별 -> 고딕).
+    var fontStyleHint: String? = nil
 }
 
 /// 번역 패치의 글자색/배경색/진하기 사용자 설정. UserDefaults에 비민감 값만 저장한다.
@@ -173,6 +177,8 @@ struct PatchColorSettings: Equatable {
     var manualTextColor: RGBColor = RGBColor(red: 0, green: 0, blue: 0)
     /// 패치 배경 불투명도 0...1 (기본 95%). 자동/수동 모드 모두에 적용된다.
     var backgroundOpacity: Double = defaultOpacity
+    /// 번역문 글꼴(고딕/명조/손글씨). 자동은 원본 글자 획 특징으로 고른다.
+    var fontStyle: FontStyle = .auto
 
     private enum Keys {
         static let useAuto = "PatchColor.useAutoColors"
@@ -183,6 +189,7 @@ struct PatchColorSettings: Equatable {
         static let textG = "PatchColor.manualTextGreen"
         static let textB = "PatchColor.manualTextBlue"
         static let opacity = "PatchColor.backgroundOpacity"
+        static let fontStyle = "PatchColor.fontStyle"
     }
 
     static func loadFromDefaults() -> PatchColorSettings {
@@ -198,6 +205,7 @@ struct PatchColorSettings: Equatable {
             settings.manualTextColor = RGBColor(
                 red: d.double(forKey: Keys.textR), green: d.double(forKey: Keys.textG), blue: d.double(forKey: Keys.textB))
         }
+        settings.fontStyle = FontStyle.validated(d.string(forKey: Keys.fontStyle))
         return settings
     }
 
@@ -211,6 +219,7 @@ struct PatchColorSettings: Equatable {
         d.set(manualTextColor.red, forKey: Keys.textR)
         d.set(manualTextColor.green, forKey: Keys.textG)
         d.set(manualTextColor.blue, forKey: Keys.textB)
+        d.set(fontStyle.rawValue, forKey: Keys.fontStyle)
     }
 }
 

@@ -99,6 +99,7 @@ function render(state) {
     $("engineNote").appendChild(revoke);
   }
   $("images").checked = state.settings.images;
+  $("fontStyle").value = ["auto", "gothic", "myeongjo", "hand"].includes(state.settings.fontStyle) ? state.settings.fontStyle : "auto";
   $("translate").disabled = tabId === null;
   // 이 탭이 아직 번역되지 않았어도 전역 자동 번역이 켜져 있으면 전역으로 끌 수 있어야 한다.
   $("original").disabled = !state.page && !state.settings.automaticEnabled;
@@ -218,6 +219,11 @@ $("engineCancel").addEventListener("click", () => {
 
 $("images").addEventListener("change", async (event) => {
   await call({ cmd: "setImages", enabled: event.target.checked }).catch((e) => showError(e.message));
+  refresh();
+});
+
+$("fontStyle").addEventListener("change", async (event) => {
+  await call({ cmd: "setFontStyle", fontStyle: event.target.value }).catch((e) => showError(e.message));
   refresh();
 });
 

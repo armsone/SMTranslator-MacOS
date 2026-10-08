@@ -124,7 +124,10 @@ enum CaptureService {
                 try Task.checkCancellation()
                 if !paragraphs.isEmpty {
                     return paragraphs.enumerated().map { index, paragraph in
-                        OCRLine(id: index, text: paragraph.text, boundingBox: paragraph.box)
+                        // Vision 문서 인식 결과(원점 좌하단)를 이미지 픽셀 좌표(원점 좌상단)로 뒤집어 분류에 넘긴다.
+                        let flipped = paragraph.glyphBoxes.map { g in CGRect(x: g.minX, y: 1 - g.maxY, width: g.width, height: g.height) }
+                        let hint = ImageTextRecognizer.classifyFontStyle(of: image, glyphBoxes: flipped)
+                        return OCRLine(id: index, text: paragraph.text, boundingBox: paragraph.box, fontStyleHint: hint)
                     }
                 }
             } catch is CancellationError {
@@ -162,18 +165,21 @@ enum CaptureService {
                 fallback.usesLanguageCorrection = true
                 fallback.automaticallyDetectsLanguage = true
                 try handler.perform([fallback])
-                return sortedLines(fallback.results)
+                return sortedLines(fallback.results, image: image)
             }
         }
-        return sortedLines(request.results)
+        return sortedLines(request.results, image: image)
     }
 
-    private static func sortedLines(_ observations: [VNRecognizedTextObservation]?) -> [OCRLine] {
+    private static func sortedLines(_ observations: [VNRecognizedTextObservation]?, image: CGImage) -> [OCRLine] {
         guard let observations else { return [] }
         let sorted = observations.sorted { $0.boundingBox.origin.y > $1.boundingBox.origin.y }
         return sorted.enumerated().compactMap { index, observation in
-            guard let text = observation.topCandidates(1).first?.string else { return nil }
-            return OCRLine(id: index, text: text, boundingBox: observation.boundingBox)
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            // glyphBoxes(of:)는 이미 이미지 좌상단 원점 정규화 좌표로 뒤집혀 있어 classifyFontStyle에 바로 쓸 수 있다.
+            let glyphBoxes = ImageTextRecognizer.glyphBoxes(of: candidate)
+            let hint = ImageTextRecognizer.classifyFontStyle(of: image, glyphBoxes: glyphBoxes)
+            return OCRLine(id: index, text: candidate.string, boundingBox: observation.boundingBox, fontStyleHint: hint)
         }
     }
 

@@ -16,14 +16,19 @@ struct OCRRegion: Identifiable {
     /// SDK에서 범위를 못 가져온 글자는 빠져 있을 수 있으며, 그 글자의 원본 픽셀은 마스킹하지 않는다.
     /// 최대 maxGlyphsPerItem개로 제한된다.
     let glyphBoxes: [CGRect]
+    /// 원본 글자 획의 가벼운 통계로 추정한 글꼴 갈래("gothic"/"myeongjo"/"hand"). 표본이 부족하거나
+    /// 애매하면 nil(미판별 -> 호출자가 고딕으로 대체). 정확한 글꼴 식별이 아니라 거친 추정일 뿐이다.
+    let fontStyle: String?
 
-    init(id: String, text: String, box: CGRect, backgroundHex: String, foregroundHex: String, glyphBoxes: [CGRect] = []) {
+    init(id: String, text: String, box: CGRect, backgroundHex: String, foregroundHex: String, glyphBoxes: [CGRect] = [],
+         fontStyle: String? = nil) {
         self.id = id
         self.text = text
         self.box = box
         self.backgroundHex = backgroundHex
         self.foregroundHex = foregroundHex
         self.glyphBoxes = glyphBoxes
+        self.fontStyle = fontStyle
     }
 
     /// 숫자·코드만 있는 등 번역해도 의미가 없는 조각은 오버레이/목록에서 뺀다.
@@ -88,8 +93,9 @@ enum ImageTextRecognizer {
                 CGRect(x: g.minX, y: 1 - g.maxY, width: g.width, height: g.height)
             }
             let (bg, fg) = sampleColors(of: image, in: box)
+            let fontStyle = classifyFontStyle(of: image, glyphBoxes: glyphBoxes)
             return OCRRegion(id: "\(assetID)#\(index)", text: paragraph.text, box: box, backgroundHex: bg, foregroundHex: fg,
-                              glyphBoxes: glyphBoxes)
+                              glyphBoxes: glyphBoxes, fontStyle: fontStyle)
         }
     }
 
@@ -148,14 +154,15 @@ enum ImageTextRecognizer {
         }
         return groups.prefix(maxRegions).enumerated().map { index, g in
             let (bg, fg) = sampleColors(of: image, in: g.box)
+            let fontStyle = classifyFontStyle(of: image, glyphBoxes: g.glyphBoxes)
             return OCRRegion(id: "\(assetID)#\(index)", text: g.text, box: g.box, backgroundHex: bg, foregroundHex: fg,
-                              glyphBoxes: g.glyphBoxes)
+                              glyphBoxes: g.glyphBoxes, fontStyle: fontStyle)
         }
     }
 
     /// candidate의 string에서 공백이 아닌 글자마다 boundingBox(for:)로 잉크 상자를 구한다. 범위를 못 구한
     /// 글자는 건너뛸 뿐(문단 전체를 지우는 폴백은 쓰지 않음) 결과 개수는 최대 maxGlyphsPerItem개로 제한한다.
-    private static func glyphBoxes(of candidate: VNRecognizedText) -> [CGRect] {
+    static func glyphBoxes(of candidate: VNRecognizedText) -> [CGRect] {
         let transcript = candidate.string
         var boxes: [CGRect] = []
         var index = transcript.startIndex
@@ -242,6 +249,98 @@ enum ImageTextRecognizer {
         let bg = String(format: "#%02X%02X%02X", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
         let fg = luminance > 0.55 ? "#000000" : "#FFFFFF"
         return (bg, fg)
+    }
+
+    // MARK: 글꼴 갈래 추정(고딕/명조/손글씨)
+
+    /// 실제 원본 글자 획의 두께 대비·가장자리 규칙성을 가볍게 재어 고딕/명조/손글씨 중 하나로 거칠게 가른다.
+    /// 언어나 세로쓰기 여부만으로 정하지 않으며(실제 자모 모양을 본다), 정밀한 글꼴 식별을 목표로 하지 않는다.
+    /// OCR 결과 하나당 한 번만 계산하고(글자당 상한 10개) 캐시하지 않으며, 움직임·스크롤마다 다시 재지 않는다.
+    static func classifyFontStyle(of image: CGImage, glyphBoxes: [CGRect]) -> String? {
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        guard w > 0, h > 0, !glyphBoxes.isEmpty else { return nil }
+        let imageBounds = CGRect(x: 0, y: 0, width: w, height: h)
+        let widths = glyphBoxes.map { $0.width * w }.sorted()
+        let medianWidth = widths[widths.count / 2]
+        guard medianWidth > 0 else { return nil }
+
+        var widthCVs: [Double] = []
+        var irregularities: [Double] = []
+        for box in glyphBoxes {
+            guard widthCVs.count < 10 else { break } // 글자당 비용 상한
+            let bw = box.width * w, bh = box.height * h
+            // 중앙값과 너무 다른 상자(구두점·후리가나, 또는 여러 글자가 뭉친 상자)는 전형적이지 않으므로 뺀다.
+            guard bw >= medianWidth * 0.6, bw <= medianWidth * 1.8, bh > 0 else { continue }
+            let rect = CGRect(x: box.minX * w, y: box.minY * h, width: bw, height: bh).intersection(imageBounds).integral
+            guard rect.width >= 6, rect.height >= 6, let cropped = image.cropping(to: rect),
+                  let stats = strokeStats(of: cropped) else { continue }
+            widthCVs.append(stats.widthCV)
+            irregularities.append(stats.edgeIrregularity)
+        }
+        guard widthCVs.count >= 2 else { return nil } // 표본이 너무 적으면 미판별로 둔다
+
+        let avgIrregularity = irregularities.reduce(0, +) / Double(irregularities.count)
+        let avgWidthCV = widthCVs.reduce(0, +) / Double(widthCVs.count)
+        if avgIrregularity > 0.42 { return "hand" }
+        if avgWidthCV > 0.55 { return "myeongjo" }
+        return "gothic"
+    }
+
+    /// 작은 흑백 그리드로 내려 찍어 획 두께 변동계수(가로 run-length 분산)와 가장자리 불규칙성(연속한
+    /// 행에서 획 시작 위치가 얼마나 들쭉날쭉한지)을 잰다. 정밀한 글자 모양 분석이 아니라 대략적 통계이며,
+    /// 오탐이 있을 수 있다(수동으로 고를 수 있어야 하는 이유).
+    private static func strokeStats(of image: CGImage) -> (widthCV: Double, edgeIrregularity: Double)? {
+        let grid = 24
+        var pixels = [UInt8](repeating: 0, count: grid * grid * 4)
+        guard let ctx = CGContext(data: &pixels, width: grid, height: grid, bitsPerComponent: 8, bytesPerRow: grid * 4,
+                                   space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: grid, height: grid))
+
+        func luminance(_ x: Int, _ y: Int) -> Double {
+            let idx = (y * grid + x) * 4
+            let a = Double(pixels[idx + 3]) / 255
+            guard a > 0.05 else { return 1 } // 투명은 배경으로 본다
+            let r = min(Double(pixels[idx]) / 255 / a, 1), g = min(Double(pixels[idx + 1]) / 255 / a, 1),
+                b = min(Double(pixels[idx + 2]) / 255 / a, 1)
+            return 0.299 * r + 0.587 * g + 0.114 * b
+        }
+        var total = 0.0
+        for y in 0..<grid { for x in 0..<grid { total += luminance(x, y) } }
+        let mean = total / Double(grid * grid)
+        func isInk(_ x: Int, _ y: Int) -> Bool { luminance(x, y) < mean - 0.12 }
+
+        var runWidths: [Double] = []
+        var previousStart: Int?
+        var edgeShifts: [Double] = []
+        for y in 0..<grid {
+            var x = 0
+            var firstStart: Int?
+            while x < grid {
+                if isInk(x, y) {
+                    let start = x
+                    if firstStart == nil { firstStart = start }
+                    var end = x
+                    while end < grid, isInk(end, y) { end += 1 }
+                    runWidths.append(Double(end - start))
+                    x = end
+                } else {
+                    x += 1
+                }
+            }
+            if let start = firstStart {
+                if let previousStart { edgeShifts.append(Double(abs(start - previousStart))) }
+                previousStart = start
+            }
+        }
+        guard runWidths.count >= 3 else { return nil }
+        let meanWidth = runWidths.reduce(0, +) / Double(runWidths.count)
+        guard meanWidth > 0 else { return nil }
+        let variance = runWidths.reduce(0.0) { $0 + ($1 - meanWidth) * ($1 - meanWidth) } / Double(runWidths.count)
+        let widthCV = variance.squareRoot() / meanWidth
+        let edgeIrregularity = edgeShifts.isEmpty ? 0 : (edgeShifts.reduce(0, +) / Double(edgeShifts.count)) / Double(grid)
+        return (widthCV, edgeIrregularity)
     }
 
     private static func needsNoSpace(_ a: Unicode.Scalar?, _ b: Unicode.Scalar?) -> Bool {

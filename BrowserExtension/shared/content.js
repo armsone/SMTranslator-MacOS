@@ -36,11 +36,14 @@
     "[contenteditable='']", "[contenteditable='true']", "smt-translator-layer"
   ].join(",");
 
+  const FONT_STYLES = ["auto", "gothic", "myeongjo", "hand"];
+
   const state = {
     auto: false,
     images: true,
     target: "ko",
     engine: LOCAL_ENGINE,
+    fontStyle: "auto",
     view: "translated",
     pageGen: 0,   // 이동·언어 변경 때 증가: 이전 결과 모두 무효
     scrollGen: 0, // 스크롤·크기 변경 때 증가: 이전 이미지 결과 무효
@@ -186,7 +189,80 @@
     });
   }
 
-  // MARK: 덮개 레이어(이미지 번역) — 닫힌 Shadow DOM, 클릭 통과
+  // MARK: 글꼴(고딕/명조/손글씨) — 패키지에 포함한 글꼴만 쓴다(온라인 Google Fonts·사용자 설치 글꼴 의존 안 함)
+
+  const FONT_FILES = { gothic: "fonts/NanumGothic-Regular.ttf", myeongjo: "fonts/NanumMyeongjo-Regular.ttf", hand: "fonts/NanumPenScript-Regular.ttf" };
+  const FONT_FAMILIES = { gothic: "SMTNanumGothic", myeongjo: "SMTNanumMyeongjo", hand: "SMTNanumPen" };
+  const FONT_FALLBACKS = {
+    gothic: "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
+    myeongjo: "'Apple SD Gothic Neo',serif",
+    hand: "cursive"
+  };
+  const fontLoadPromises = new Map();
+  const opticalScaleCache = new Map();
+  const OPTICAL_SAMPLE = "가나다라마바사자차카파하";
+  let opticalScratchCtx = null;
+
+  /** 같은 CSS font-size라도 손글씨(NanumPenScript)는 고딕보다 실제 잉크(글자 획)가 작게 찍힌다.
+   * 두 글꼴을 같은 px로 캔버스에 재서 실제 잉크 높이(actualBoundingBox) 비율을 구해, 손글씨가
+   * 화면에서 체감상 더 작아 보이지 않도록 보정 배율을 만든다. 임의의 상수가 아니라 번들 글꼴 자신의
+   * 실측 글리프 치수에서 나온 값이다. */
+  function inkHeight(family, px) {
+    if (!opticalScratchCtx) {
+      const canvas = document.createElement("canvas");
+      opticalScratchCtx = canvas.getContext("2d");
+    }
+    if (!opticalScratchCtx) return px;
+    opticalScratchCtx.font = `${px}px "${family}"`;
+    const metrics = opticalScratchCtx.measureText(OPTICAL_SAMPLE);
+    const ascent = metrics.actualBoundingBoxAscent;
+    const descent = metrics.actualBoundingBoxDescent;
+    if (!Number.isFinite(ascent) || !Number.isFinite(descent) || ascent + descent <= 0) return px;
+    return ascent + descent;
+  }
+
+  async function opticalScale(style) {
+    if (style === "auto" || style === "gothic") return 1;
+    if (opticalScaleCache.has(style)) return opticalScaleCache.get(style);
+    await Promise.all([loadBundledFont("gothic"), loadBundledFont(style)]);
+    const refHeight = inkHeight(FONT_FAMILIES.gothic, 100);
+    const styleHeight = inkHeight(FONT_FAMILIES[style], 100);
+    let scale = styleHeight > 0 ? refHeight / styleHeight : 1;
+    if (!Number.isFinite(scale)) scale = 1;
+    // 손글씨가 고딕보다 더 작게 찍힐 때만 키운다(1 미만이면 보정 불필요). 실측 오차로 인한 과도한
+    // 확대를 막기 위해 1.8배까지만 허용한다.
+    scale = Math.min(Math.max(scale, 1), 1.8);
+    opticalScaleCache.set(style, scale);
+    return scale;
+  }
+
+  /** 패키지에 포함한 글꼴 파일을 FontFace API로 한 번만 불러와 document.fonts에 더한다(온라인 요청 없음). */
+  function loadBundledFont(style) {
+    if (style === "auto") return Promise.resolve();
+    if (fontLoadPromises.has(style)) return fontLoadPromises.get(style);
+    const family = FONT_FAMILIES[style];
+    const file = FONT_FILES[style];
+    if (!family || !file) return Promise.resolve();
+    const promise = Promise.resolve()
+      .then(() => new FontFace(family, `url(${api.runtime.getURL(file)})`).load())
+      .then((loaded) => { document.fonts.add(loaded); return true; })
+      .catch(() => false);
+    fontLoadPromises.set(style, promise);
+    return promise;
+  }
+
+  /** 자동 글꼴일 때 원본 글자 특징(item.fs)으로 고른 갈래, 수동이면 사용자가 고른 갈래로 확정한다. 알 수 없는
+   * 값·미판별은 고딕으로 대체한다(가짜로 정확히 식별한 척하지 않음). */
+  function resolveFontStyle(itemFontStyle) {
+    if (state.fontStyle === "gothic" || state.fontStyle === "myeongjo" || state.fontStyle === "hand") return state.fontStyle;
+    return itemFontStyle === "myeongjo" || itemFontStyle === "hand" ? itemFontStyle : "gothic";
+  }
+
+  function fontFamilyFor(style) {
+    const family = FONT_FAMILIES[style] || FONT_FAMILIES.gothic;
+    const fallback = FONT_FALLBACKS[style] || FONT_FALLBACKS.gothic;
+    return `"${family}",${fallback}`;
+  }
 
   let layerHost = null;
   let layerRoot = null;
@@ -211,10 +287,13 @@
     style.textContent =
       ".img{position:absolute;pointer-events:none;overflow:hidden}" +
       ".mask{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}" +
+      // 가운데 정렬 대신 원문 기준(가로쓰기는 좌상단, 세로쓰기는 우상단에서 시작)으로 맞춘다: 원본 가로
+      // 내레이션은 보통 좌측 정렬, 세로쓰기 칸은 글자가 상단부터 고른 줄간격으로 내려간다(.vert가 override).
       ".t{position:absolute;box-sizing:border-box;overflow:hidden;pointer-events:none;user-select:none;" +
-      "display:flex;align-items:center;justify-content:center;text-align:center;background:transparent;" +
+      "display:flex;align-items:flex-start;justify-content:flex-start;text-align:left;background:transparent;" +
       "font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.15;white-space:normal;" +
       "word-break:keep-all;overflow-wrap:anywhere;padding:0 1px}" +
+      ".t.vert{justify-content:flex-start;align-items:flex-start}" +
       // .tt(안쪽 글자 상자)는 flex-shrink:0으로 바깥 flex가 줄여 넘침을 감추지 못하게 하고, overflow는 기본
       // visible로 둬 scrollWidth/scrollHeight가 바깥 .t(overflow:hidden, 가운데 정렬)의 뒤틀린 값 대신 글자
       // 자신의 실제 필요한 크기를 그대로 보여주게 한다(가운데 정렬된 내용은 앞쪽으로 넘친 만큼이 scrollWidth에
@@ -460,6 +539,12 @@
   // physical height로 매핑되므로, 그 쪽만 가용 치수로 고정해 줄바꿈(가로 줄 또는 세로 칸)이 일어나게 하고
   // 반대 축은 auto로 열어 둬 넘침이 그 축의 scroll 치수로 그대로 드러나게 한다.
   function fitFontSize(div, text, minFont, preferredMax, vertical) {
+    // 글꼴 변경·재조정 때 이전 호출이 남긴 overflow(visible/auto)가 이번 측정에 끼어들지 않도록 기본값(hidden,
+    // CSS .t 참고)으로 되돌린 뒤 다시 잰다. 그래야 이제 들어가는 글도 불필요한 스크롤바가 남지 않는다.
+    div.style.overflow = "hidden";
+    div.style.pointerEvents = "none";
+    div.removeAttribute("title");
+    div.removeAttribute("aria-label");
     if (vertical) {
       text.style.height = `${div.clientHeight}px`;
       text.style.width = "auto";
@@ -479,9 +564,27 @@
       }
       div.style.fontSize = `${Math.max(minFont, Math.floor(lo))}px`;
     }
+    // 최소 글자 크기에서도 원래 좁은 칸에 다 들어가지 않으면: 먼저 줄 간격을 좁혀 한 번 더 시도한다.
+    // 그래도 안 들어가면 그림·이웃 칸을 덮거나 글자를 잘라내는 대신, 원래 상자 안에서만 지역적으로
+    // 스크롤되게 한다(overflow:auto). 원본 마스킹·상자 위치·크기는 그대로이고, 브라우저 기본 스크롤바가
+    // 필요할 때만 상자 안쪽에 나타난다(번역문 전체는 항상 그대로 보존되어 잘리지 않는다).
+    if (!fits()) {
+      text.style.lineHeight = "1";
+      if (!fits()) {
+        div.style.overflow = "auto";
+        div.style.pointerEvents = "auto";
+        div.title = text.textContent;
+        div.setAttribute("aria-label", text.textContent);
+        console.warn(
+          `SMT: 텍스트가 칸(${Math.round(div.clientWidth)}x${Math.round(div.clientHeight)}px)에 ` +
+          `최소 글자 크기(${minFont}px)로도 다 들어가지 않아 칸 안에서 스크롤됩니다(필요 ${Math.round(text.scrollWidth)}x${Math.round(text.scrollHeight)}px).`
+        );
+      }
+    }
+    return parseFloat(div.style.fontSize) || minFont;
   }
 
-  function renderImage(candidate, items, langs, refineCandidates) {
+  async function renderImage(candidate, items, langs, refineCandidates) {
     const { img, rect, clip } = candidate;
     const previous = imageRecords.get(img);
     if (previous) previous.box.remove();
@@ -494,7 +597,8 @@
     box.style.height = `${clip.h}px`;
     root.appendChild(box);
 
-    const MIN_FONT = 8;
+    // 너무 작아 읽기 어려운 글자가 조용히 남지 않도록 최소 글자 크기를 12px로 둔다(0.6.2까지의 8px보다 큼).
+    const MIN_FONT = 12;
     const MAX_FONT = 39;
 
     // 원본 글자를 가리는 배경은 보고된 글자 상자(item.g)에만, 이미지 하나당 캔버스 하나에 평면색으로 그린다.
@@ -516,12 +620,38 @@
       }
     }
 
-    // 원본 글자 크기 추정(0.5.5 기준 짧은 쪽 * 0.88에서 0.6.2에서 10% 추가 확대: * 0.968).
-    // item.g(글자 상자)는 마스킹 전용이며 이 추정에는 쓰지 않는다.
+    // 원본 글자 하나하나의 실제 잉크 상자(item.g) 중앙값으로 크기를 추정한다(문단 전체 상자보다 훨씬 고르다).
+    // 구두점·후리가나 같은 작은 이상치(중앙값의 45% 미만)와 여러 글자가 뭉친 상자(칸 전체에 가까운 크기)는
+    // 뺀 뒤 다시 중앙값을 낸다. 글자 상자가 없는 조각만 기존 문단 전체 추정(* 0.968, 0.5.5 기준 * 0.88에서
+    // 0.6.2에서 10% 확대)으로 폴백한다.
+    function glyphEstimate(item) {
+      if (!Array.isArray(item.g) || item.g.length < 2) return null;
+      const dims = [];
+      for (const g of item.g) {
+        const gw = g[2] * clip.w, gh = g[3] * clip.h;
+        if (gw <= 0 || gh <= 0) continue;
+        if (gw >= clip.w * 0.9 || gh >= clip.h * 0.9) continue; // 뭉친/전체 칸 상자 제외
+        dims.push(Math.min(gw, gh));
+      }
+      if (dims.length < 2) return null;
+      const sorted = dims.slice().sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      if (median <= 0) return null;
+      const filtered = dims.filter((d) => d >= median * 0.45);
+      if (!filtered.length) return null;
+      filtered.sort((a, b) => a - b);
+      return filtered[Math.floor(filtered.length / 2)];
+    }
+
     const geoms = items.map((item) => {
       const w = item.w * clip.w, h = item.h * clip.h;
       const vertical = w > 0 && h / w > 1.6 && LETTER_CJK.test(item.t);
-      return { w, h, vertical, estimate: Math.min(w, h) * 0.968, cx: (item.x + item.w / 2) * clip.w, top: item.y * clip.h, bottom: (item.y + item.h) * clip.h };
+      const glyph = glyphEstimate(item);
+      const estimate = glyph != null ? glyph : Math.min(w, h) * 0.968;
+      return {
+        w, h, vertical, estimate, cx: (item.x + item.w / 2) * clip.w,
+        left: item.x * clip.w, top: item.y * clip.h, bottom: (item.y + item.h) * clip.h
+      };
     });
 
     // 같은 말풍선의 인접한 세로쓰기 칸들은 서로 다른 글자 수/모양으로 geometry 추정이 들쭉날쭉해질 수 있다.
@@ -546,6 +676,23 @@
         }
       }
     }
+    // 가로쓰기 내레이션도 같은 문단이면(바로 위/아래로 이어지고 왼쪽 시작선이 비슷하면) 같은 무리로 묶어
+    // 최종 글자 크기 합의를 함께 받게 한다(네이티브 화면 캡처의 문단 묶기 기준과 같은 간격·정렬 허용치).
+    for (let i = 0; i < geoms.length; i += 1) {
+      if (geoms[i].vertical) continue;
+      for (let j = i + 1; j < geoms.length; j += 1) {
+        if (geoms[j].vertical) continue;
+        const a = geoms[i], b = geoms[j];
+        const [upper, lower] = a.top <= b.top ? [a, b] : [b, a];
+        const gap = lower.top - upper.bottom;
+        const heightRatio = lower.h / Math.max(upper.h, 0.0001);
+        const alignedLeft = Math.abs(a.left - b.left) < Math.max(a.w, b.w) * 0.12;
+        if (gap >= -upper.h * 0.3 && gap < upper.h * 0.9 && heightRatio > 0.65 && heightRatio < 1.5 && alignedLeft) {
+          const ra = find(i), rb = find(j);
+          if (ra !== rb) groupOf[rb] = ra;
+        }
+      }
+    }
     const byRoot = new Map();
     geoms.forEach((_, i) => {
       const r = find(i);
@@ -559,8 +706,13 @@
       idxs.forEach((i) => { geoms[i].estimate = median; });
     });
 
-    // 번역 글자는 투명 배경으로, 원본 OCR 테두리 안에 그대로 두고 중앙에 맞춘다(가로 확장 없음).
-    items.forEach((item, i) => {
+    // 번역 글자는 투명 배경으로, 원본 OCR 테두리 안에 그대로 두되 원문 방향 기준(가로쓰기 좌상단,
+    // 세로쓰기 위에서부터)으로 맞춘다(가로 확장 없음).
+    const divs = new Array(items.length);
+    const texts = new Array(items.length);
+    const fitted = new Array(items.length);
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
       const div = document.createElement("div");
       div.className = "t";
       div.style.left = `${item.x * 100}%`;
@@ -571,30 +723,69 @@
 
       const { vertical, estimate } = geoms[i];
       if (vertical) {
+        div.classList.add("vert");
         div.style.writingMode = "vertical-rl";
         div.style.textOrientation = "upright";
       }
-      // 글자는 안쪽 .tt에 넣는다: 이 요소의 scrollWidth/scrollHeight로 넘침을 재야 바깥 .t(가운데 정렬,
-      // overflow:hidden)의 뒤틀린 scrollWidth/scrollHeight 대신 실제 필요한 크기를 알 수 있다(fitFontSize 참고).
+      const fontStyle = resolveFontStyle(item.fs);
+      div.style.fontFamily = fontFamilyFor(fontStyle);
+      // 글자는 안쪽 .tt에 넣는다: 이 요소의 scrollWidth/scrollHeight로 넘침을 재야 바깥 .t(overflow:hidden)의
+      // 뒤틀린 scrollWidth/scrollHeight 대신 실제 필요한 크기를 알 수 있다(fitFontSize 참고).
       const text = document.createElement("span");
       text.className = "tt";
       text.textContent = item.t;
       div.appendChild(text);
       box.appendChild(div);
       if (refineCandidates && typeof item.o === "string" && item.o && refineCandidates.length < MAX_REFINE_ITEMS) {
-        refineCandidates.push({ el: text, original: item.o, draft: item.t });
+        refineCandidates.push({ el: text, original: item.o, draft: item.t, items, index: i });
       }
+      divs[i] = div;
+      texts[i] = text;
 
-      const preferredMax = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(estimate)));
-      fitFontSize(div, text, MIN_FONT, preferredMax, vertical);
+      // 실제 쓰일 글꼴이 불러와진 뒤에 재야 fitFontSize의 측정(scrollWidth/scrollHeight)이 맞는다(비동기 webfont 로드 기다림).
+      await loadBundledFont(fontStyle);
+      const scale = await opticalScale(fontStyle);
+      const scaledMin = Math.min(MAX_FONT - 1, Math.round(MIN_FONT * scale));
+      const preferredMax = Math.min(MAX_FONT, Math.max(scaledMin, Math.round(estimate * scale)));
+      fitted[i] = fitFontSize(div, text, scaledMin, preferredMax, vertical);
+    }
+
+    // 초기 추정치 합의만으로는 같은 문단 안에서 글자 수·칸 비율이 달라 최종 결과가 들쭉날쭉할 수 있다.
+    // 실제로 맞춰진(fitted) 크기까지 같은 무리(byRoot) 안에서 다시 한번 합의한다: 무리의 가장 작은
+    // 최종 크기로 맞추면(더 큰 칸은 그보다 작게 줄이는 것이므로 항상 들어간다) 한 문단 안 글자 크기가
+    // 고르게 보인다. 의도적으로 다른 크기를 쓴 원본(제목·효과음 등, 다른 무리)은 건드리지 않는다.
+    byRoot.forEach((idxs) => {
+      if (idxs.length < 2) return;
+      const minFitted = Math.min(...idxs.map((i) => fitted[i]));
+      idxs.forEach((i) => {
+        if (fitted[i] === minFitted) return;
+        divs[i].style.overflow = "hidden";
+        divs[i].style.fontSize = `${minFitted}px`;
+        texts[i].style.lineHeight = "1.15";
+        fitted[i] = minFitted;
+      });
     });
 
     imageRecords.set(img, {
       key: imageKey(img), box,
       offX: clip.x - rect.left, offY: clip.y - rect.top, w: clip.w, h: clip.h,
       elemW: rect.width, elemH: rect.height,
-      langs: langs && typeof langs === "object" ? langs : undefined // 구버전 응답이면 생략: 미판별로 둔갑시키지 않는다
+      langs: langs && typeof langs === "object" ? langs : undefined, // 구버전 응답이면 생략: 미판별로 둔갑시키지 않는다
+      items // 글꼴 변경 때 재캡처·재번역 없이 같은 조각으로 다시 그리기 위한 캐시(마스킹·위치는 그대로 재사용)
     });
+  }
+
+  /** 글꼴 설정이 바뀌었을 때 이미 그려진 이미지 덮개를 재캡처·재번역 없이 다시 그린다(글자색·마스킹·자리는 그대로). */
+  function rerenderImageFonts() {
+    for (const [img, record] of Array.from(imageRecords.entries())) {
+      if (!img.isConnected || !Array.isArray(record.items)) continue;
+      const rect = img.getBoundingClientRect();
+      const candidate = {
+        img, rect,
+        clip: { x: rect.left + record.offX, y: rect.top + record.offY, w: record.w, h: record.h }
+      };
+      renderImage(candidate, record.items, record.langs, null).catch(() => {});
+    }
   }
 
   /** 이미지 위 OCR 번역 글자 중 일부만 다듬어 같은 칸의 텍스트만 바꾼다(글꼴·위치·마스킹은 그대로).
@@ -614,7 +805,11 @@
       if (!candidate || `i${index}` !== item.k || !candidate.el.isConnected) continue;
       if (candidate.el.textContent !== candidate.draft) continue; // 그사이 다시 그려졌으면 건드리지 않는다
       const refined = item.t.trim();
-      if (refined) candidate.el.textContent = refined;
+      if (!refined) continue;
+      candidate.el.textContent = refined;
+      // 캐시(record.items)도 같은 참조를 공유하므로 여기서 갱신해야, 글꼴만 바꿔 재캡처 없이 다시 그릴 때
+      // (rerenderImageFonts) 다듬기 전 초안으로 되돌아가지 않는다.
+      if (candidate.items && candidate.items[candidate.index]) candidate.items[candidate.index].t = refined;
     }
   }
 
@@ -719,7 +914,7 @@
         // OCR을 기다리는 사이 이 이미지가 다른 그림으로 바뀌었거나(src·currentSrc) 새 그림을 불러오는 중이거나(!complete)
         // 자리·크기가 달라졌으면(같은 엘리먼트를 재사용하거나 옮기는 리더) 방금 받은 글자는 예전 그림 것이므로 버린다.
         if (!candidateUnchanged(candidate)) continue;
-        renderImage(candidate, image.items, image.langs, isExternal() ? null : imageRefineCandidates);
+        await renderImage(candidate, image.items, image.langs, isExternal() ? null : imageRefineCandidates);
       }
       if (!isExternal() && state.aiRefine && imageRefineCandidates.length) {
         refineImageCandidates(imageRefineCandidates, pageGen, scrollGen).catch(() => {});
@@ -991,6 +1186,7 @@
     }
     return {
       ok: true, view: state.view, auto: state.auto, images: state.images, target: state.target, engine: state.engine,
+      fontStyle: state.fontStyle,
       status: state.status, error: state.error, warning: state.warning, translated, imageCount: imageRecords.size,
       langCounts: hasLangData ? langCounts : null
     };
@@ -1007,8 +1203,14 @@
         }
         const targetChanged = typeof message.target === "string" && message.target !== state.target;
         const engineChanged = typeof message.engine === "string" && message.engine !== state.engine;
+        const fontStyleChanged = typeof message.fontStyle === "string" && FONT_STYLES.includes(message.fontStyle) &&
+          message.fontStyle !== state.fontStyle;
         state.auto = message.auto === true;
         state.images = message.images !== false;
+        if (fontStyleChanged) {
+          state.fontStyle = message.fontStyle;
+          rerenderImageFonts(); // 재캡처·재번역 없이 이미 그려진 이미지 덮개만 새 글꼴로 다시 그린다
+        }
         if (targetChanged || engineChanged) {
           if (targetChanged) state.target = message.target;
           if (engineChanged) state.engine = message.engine;

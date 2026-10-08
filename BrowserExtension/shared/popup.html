@@ -56,6 +56,17 @@
     </div>
     <p id="autoStatus" class="auto"></p>
     <label class="check"><input type="checkbox" id="images"> 이미지 속 글자도 번역</label>
+    <label class="row">이미지 글꼴
+      <span class="rowEnd">
+        <select id="fontStyle">
+          <option value="auto">자동(기본)</option>
+          <option value="gothic">고딕</option>
+          <option value="myeongjo">명조</option>
+          <option value="hand">손글씨</option>
+        </select>
+        <span class="help" title="자동은 원본 글자 획의 두께·규칙성을 가볍게 보고 고릅니다. 정확한 글꼴 식별은 아니며, 애매하면 고딕을 씁니다. 손글씨는 같은 크기에서도 획이 가늘어 보이는 만큼 자동으로 보정해 키웁니다.">?</span>
+      </span>
+    </label>
   </section>
 
   <p id="status" class="status"></p>

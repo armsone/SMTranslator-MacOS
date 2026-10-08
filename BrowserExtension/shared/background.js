@@ -28,7 +28,9 @@ const LOCAL_ENGINE = "apple";
 const EXTERNAL_ENGINES = IS_SAFARI ? [] : ["deepl", "google", "papago"];
 const CAPTURE_MIN_INTERVAL = 700; // Chrome captureVisibleTab 호출 빈도 제한(초당 2회) 아래로 유지
 const CAPTURE_TTL = 15000;
-const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [] };
+const FONT_STYLES = ["auto", "gothic", "myeongjo", "hand"];
+const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [],
+                   fontStyle: "auto" };
 
 function codedError(code, message) {
   const error = new Error(message || code);
@@ -58,7 +60,8 @@ async function loadSettings() {
     images: stored.images !== false,
     automaticEnabled: stored.automaticEnabled === true,
     engine,
-    engineConsents
+    engineConsents,
+    fontStyle: FONT_STYLES.includes(stored.fontStyle) ? stored.fontStyle : "auto"
   };
 }
 
@@ -557,6 +560,7 @@ function configureMessage(settings, epoch, extra = {}) {
     target: settings.target,
     engine: settings.engine,
     images: settings.images,
+    fontStyle: settings.fontStyle,
     ...extra
   };
 }
@@ -711,6 +715,11 @@ async function handlePopup(message) {
     }
     case "setImages": {
       await api.storage.local.set({ images: message.enabled === true });
+      return { ok: true, page: await reconfigure(tabId, origin) };
+    }
+    case "setFontStyle": {
+      if (!FONT_STYLES.includes(message.fontStyle)) throw codedError("bad_request", "지원하지 않는 글꼴입니다.");
+      await api.storage.local.set({ fontStyle: message.fontStyle });
       return { ok: true, page: await reconfigure(tabId, origin) };
     }
     case "translateNow": {

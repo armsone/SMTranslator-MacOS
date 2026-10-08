@@ -55,6 +55,15 @@ final class TranslationPatchesView: NSView {
             let colors = resolvedColors(for: record.patch)
             record.tint.layer?.backgroundColor = colors.background.cgColor
             record.label.textColor = colors.text
+            // 글꼴 선택이 바뀌었을 수 있으므로(색상과 달리 글자 크기 재계산이 필요) 같은 자리에서 다시 맞춘다.
+            guard let blur = record.label.superview else { continue }
+            let frameSize = blur.bounds.size
+            let font = fittingFont(for: record.patch.translatedText, in: frameSize, fontStyleHint: record.patch.fontStyleHint)
+            let textWidth = frameSize.width - Self.horizontalPadding * 2
+            let textHeight = min(frameSize.height, textBoundingHeight(record.patch.translatedText, font: font, width: textWidth))
+            record.label.font = font
+            record.label.frame = NSRect(x: Self.horizontalPadding, y: (frameSize.height - textHeight) / 2,
+                                        width: textWidth, height: textHeight)
         }
     }
 
@@ -87,7 +96,7 @@ final class TranslationPatchesView: NSView {
         tint.autoresizingMask = [.width, .height]
         blur.addSubview(tint)
 
-        let font = fittingFont(for: patch.translatedText, in: frame.size)
+        let font = fittingFont(for: patch.translatedText, in: frame.size, fontStyleHint: patch.fontStyleHint)
         let label = NSTextField(wrappingLabelWithString: patch.translatedText)
         label.font = font
         label.alignment = .left
@@ -119,7 +128,7 @@ final class TranslationPatchesView: NSView {
         let record = records[index]
         guard let blur = record.label.superview else { return }
         let frameSize = blur.bounds.size
-        let font = fittingFont(for: text, in: frameSize)
+        let font = fittingFont(for: text, in: frameSize, fontStyleHint: record.patch.fontStyleHint)
         let textWidth = frameSize.width - Self.horizontalPadding * 2
         let textHeight = min(frameSize.height, textBoundingHeight(text, font: font, width: textWidth))
         record.label.font = font
@@ -132,7 +141,8 @@ final class TranslationPatchesView: NSView {
         )
         records[index] = PatchRecord(patch: TranslatedPatch(id: record.patch.id, translatedText: text,
                                                              boundingBox: record.patch.boundingBox,
-                                                             autoBackgroundColor: record.patch.autoBackgroundColor),
+                                                             autoBackgroundColor: record.patch.autoBackgroundColor,
+                                                             fontStyleHint: record.patch.fontStyleHint),
                                       tint: record.tint, label: record.label)
     }
 
@@ -144,18 +154,33 @@ final class TranslationPatchesView: NSView {
         ).height) + 2
     }
 
+    /// 지금 쓸 글꼴 갈래: 사용자가 고딕/명조/손글씨를 직접 골랐으면 그대로, 자동이면 이 줄의 원본 글자
+    /// 통계 힌트(fontStyleHint)로 고르고 미판별이면 고딕으로 대체한다(가짜 정확 식별이 아님).
+    private func effectiveFontStyle(for fontStyleHint: String?) -> FontStyle {
+        guard colorSettings.fontStyle == .auto else { return colorSettings.fontStyle }
+        switch fontStyleHint {
+        case "myeongjo": return .myeongjo
+        case "hand": return .hand
+        default: return .gothic
+        }
+    }
+
     /// 박스 높이에 맞춰 폰트 크기를 줄여가며 줄바꿈으로 채워지도록 크기를 고른다.
-    private func fittingFont(for text: String, in size: NSSize) -> NSFont {
-        var fontSize = max(11, min(22, size.height * 0.847)).rounded()
-        let minFontSize: CGFloat = 8
+    private func fittingFont(for text: String, in size: NSSize, fontStyleHint: String?) -> NSFont {
+        let style = effectiveFontStyle(for: fontStyleHint)
+        // 손글씨처럼 같은 pointSize에서 실제 글자 몸통(capHeight)이 더 작게 찍히는 글꼴은, 실측 비율만큼
+        // 요청 크기를 키워 체감 크기를 고딕과 맞춘다(임의 상수가 아니라 번들 글꼴 자신의 capHeight 비율).
+        let scale = BundledFonts.opticalScale(for: style)
+        var fontSize = (max(11, min(22, size.height * 0.847)) * scale).rounded()
+        let minFontSize: CGFloat = (8 * scale).rounded()
         while fontSize > minFontSize {
-            let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+            let font = BundledFonts.font(for: style, size: fontSize)
             if textBoundingHeight(text, font: font, width: size.width - Self.horizontalPadding * 2) <= size.height {
                 return font
             }
             fontSize -= 1
         }
-        return NSFont.systemFont(ofSize: minFontSize, weight: .medium)
+        return BundledFonts.font(for: style, size: minFontSize)
     }
 }
 

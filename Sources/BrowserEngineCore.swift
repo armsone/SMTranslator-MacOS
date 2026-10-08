@@ -496,6 +496,8 @@ actor BrowserEngine {
             let imageKey: String; let box: CGRect; let text: String; let bg: String; let fg: String
             /// box와 같은 요청 영역 기준 0...1 좌표로 변환한 원본 글자 상자(마스킹·글꼴 추정용)
             let glyphBoxes: [CGRect]
+            /// 원본 글자 획 통계로 추정한 글꼴 갈래("gothic"/"myeongjo"/"hand"). 미판별이면 nil.
+            let fontStyle: String?
         }
         var found: [Found] = []
         var keys: [String] = []
@@ -520,7 +522,7 @@ actor BrowserEngine {
                 let box = mapRect(item.box)
                 let glyphBoxes = item.glyphBoxes.map(mapRect)
                 found.append(Found(imageKey: region.k, box: box, text: item.text, bg: item.backgroundHex, fg: item.foregroundHex,
-                                    glyphBoxes: glyphBoxes))
+                                    glyphBoxes: glyphBoxes, fontStyle: item.fontStyle))
             }
         }
 
@@ -548,6 +550,8 @@ actor BrowserEngine {
                 // 이 원문을 저장하거나 기록하지 않고, 같은 패스의 후속 요청 한 번에만 메모리에서 쓴다.
                 "o": String(item.text.prefix(700))
             ]
+            // 원본 글자 획 통계로 추정한 글꼴 갈래("fs"). 미판별이면 생략(확장이 고딕으로 대체).
+            if let fontStyle = item.fontStyle { dict["fs"] = fontStyle }
             // 원본 글자 상자([x,y,w,h] 배열의 배열). 없으면("g" 생략) 확장이 그 조각의 배경을 마스킹하지 않는다.
             if !item.glyphBoxes.isEmpty && item.glyphBoxes.count <= glyphBudget {
                 dict["g"] = item.glyphBoxes.map { [rounded($0.minX), rounded($0.minY), rounded($0.width), rounded($0.height)] }

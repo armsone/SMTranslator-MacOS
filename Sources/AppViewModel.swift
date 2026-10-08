@@ -495,7 +495,7 @@ final class AppViewModel: ObservableObject {
 
         if source.language == target {
             for line in lines {
-                appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
+                appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id], fontStyleHint: line.fontStyleHint))
             }
             completeIfAllReceived()
             return
@@ -510,13 +510,13 @@ final class AppViewModel: ObservableObject {
             for (line, result) in zip(lines, detected) {
                 switch result {
                 case .noLetters:
-                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
+                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id], fontStyleHint: line.fontStyleHint))
                 case .language(let key) where LanguageDetection.isSameLanguage(key, target.rawValue):
-                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
+                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id], fontStyleHint: line.fontStyleHint))
                 case .language(let key) where isAutoSupported(key):
                     languageByLine[line.id] = key
                 default:
-                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id]))
+                    appendPatch(TranslatedPatch(id: line.id, translatedText: line.text, boundingBox: line.boundingBox, autoBackgroundColor: bgColors[line.id], fontStyleHint: line.fontStyleHint))
                     skippedLineIDs.insert(line.id)
                 }
             }
@@ -658,7 +658,7 @@ final class AppViewModel: ObservableObject {
               let lineID = Int(parts[1]),
               let line = currentLines[lineID],
               !receivedLineIDs.contains(lineID) else { return }
-        appendPatch(TranslatedPatch(id: lineID, translatedText: response.targetText, boundingBox: line.boundingBox, autoBackgroundColor: lineBackgroundColors[lineID]))
+        appendPatch(TranslatedPatch(id: lineID, translatedText: response.targetText, boundingBox: line.boundingBox, autoBackgroundColor: lineBackgroundColors[lineID], fontStyleHint: line.fontStyleHint))
         status = .translating(done: receivedLineIDs.count, total: currentLines.count, skipped: skippedLineIDs.count)
         noteTranslatedForRefine(id: lineID, original: line.text, draft: response.targetText, generation: generation)
     }
@@ -694,7 +694,7 @@ final class AppViewModel: ObservableObject {
                 if let index = self.translatedPatches.firstIndex(where: { $0.id == lineID }) {
                     let old = self.translatedPatches[index]
                     self.translatedPatches[index] = TranslatedPatch(id: old.id, translatedText: text, boundingBox: old.boundingBox,
-                                                                     autoBackgroundColor: old.autoBackgroundColor)
+                                                                     autoBackgroundColor: old.autoBackgroundColor, fontStyleHint: old.fontStyleHint)
                 }
                 self.overlay?.updateTranslationPatchText(id: lineID, text: text)
             }
@@ -863,7 +863,7 @@ final class AppViewModel: ObservableObject {
                 switch result {
                 case .success(let translated):
                     self.appendPatch(TranslatedPatch(id: item.id, translatedText: translated, boundingBox: line.boundingBox,
-                                                     autoBackgroundColor: self.lineBackgroundColors[item.id]))
+                                                     autoBackgroundColor: self.lineBackgroundColors[item.id], fontStyleHint: line.fontStyleHint))
                 case .failure(.item), .failure(.unsupported):
                     self.externalFailedLineIDs.insert(item.id)
                 case .failure(.cancelled):
@@ -919,7 +919,7 @@ final class AppViewModel: ObservableObject {
                       !receivedLineIDs.contains(lineID) else { continue }
                 if let translated = translations[item.key] {
                     appendPatch(TranslatedPatch(id: lineID, translatedText: translated, boundingBox: line.boundingBox,
-                                                autoBackgroundColor: lineBackgroundColors[lineID]))
+                                                autoBackgroundColor: lineBackgroundColors[lineID], fontStyleHint: line.fontStyleHint))
                 } else {
                     let attempts = externalMissingAttempts[lineID, default: 0]
                     externalMissingAttempts[lineID] = attempts + 1
