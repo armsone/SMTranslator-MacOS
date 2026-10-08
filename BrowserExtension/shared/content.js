@@ -268,10 +268,10 @@
         batch.push(texts[start]);
         start += 1;
       }
-      if (pageGen !== state.pageGen) return;
+      if (!stillCurrent(pageGen)) return;
       const target = state.target;
       const response = await send({ cmd: "translate", target, engine, texts: batch });
-      if (pageGen !== state.pageGen || target !== state.target || engine !== state.engine) return;
+      if (!stillCurrent(pageGen) || target !== state.target || engine !== state.engine) return;
       if (response.missing.length) state.warning = `언어 팩 필요: ${response.missing.join(", ")}`;
       if (response.warning) state.warning = response.warning;
       // langs는 입력과 같은 개수일 때만 쓴다(구버전 네이티브 앱이면 없음 → 언어 통계는 집계하지 않는다).
@@ -287,16 +287,29 @@
 
   // MARK: 이미지 OCR
 
+  // 요청한 주소(src)와 실제로 그려진 주소(currentSrc)를 함께 쓴다. 새 src를 불러오는 동안 currentSrc는 이전 그림
+  // 그대로일 수 있어 currentSrc만으로는 그림이 바뀐 것을 알 수 없다.
   function imageKey(img) {
-    return `${profile()}|${img.currentSrc || img.src}`;
+    return `${profile()}|${img.src}|${img.currentSrc}`;
   }
 
-  /** 기존 덮개 위치를 이미지 현재 위치에 맞추고, 크기가 바뀌었거나 사라진 이미지 덮개는 지운다. */
+  // getComputedStyle(img).opacity는 상속되지 않으므로 조상 요소가 opacity:0으로 숨긴 이미지도
+  // img 자신의 opacity는 "1"로 읽혀 후보에서 걸러지지 않는다. display/visibility/opacity를
+  // 이미지 자신부터 body까지 조상을 따라 올라가며 함께 확인한다.
+  function isImageVisible(img) {
+    for (let el = img; el instanceof Element; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    }
+    return true;
+  }
+
+  /** 기존 덮개 위치를 이미지 현재 위치에 맞추고, 크기가 바뀌었거나 사라졌거나 다른 그림을 불러오는 중이거나 숨겨진 이미지 덮개는 지운다. */
   function repositionOverlays() {
     for (const [img, record] of imageRecords) {
       const rect = img.isConnected ? img.getBoundingClientRect() : null;
       if (!rect || rect.width === 0 || Math.abs(rect.width - record.elemW) > 2 || Math.abs(rect.height - record.elemH) > 2 ||
-          record.key !== imageKey(img)) {
+          !img.complete || record.key !== imageKey(img) || !isImageVisible(img)) {
         record.box.remove();
         imageRecords.delete(img);
         continue;
@@ -321,7 +334,8 @@
       const h = clip.b - clip.y;
       if (w < 60 || h < 30 || w * h < rect.width * rect.height * 0.3) continue;
       if (img.closest(SKIP_SELECTOR)) continue;
-      if (getComputedStyle(img).visibility === "hidden") continue;
+      // 미리 불러 둔 다음 장처럼 투명하게 겹쳐 둔 이미지는 캡처에 그 위 다른 그림이 찍히므로 고르지 않는다.
+      if (!isImageVisible(img)) continue;
       const existing = imageRecords.get(img);
       const offX = clip.x - rect.left;
       const offY = clip.y - rect.top;
@@ -371,44 +385,105 @@
     });
   }
 
+  // 뷰포트와 겹치는 넓이(px^2). 화면 밖이거나 가려진 부분은 0이 되어, 보이지 않는 광고 등에 걸린 애니메이션을
+  // 기다리는 데 쓰지 않게 한다.
+  function viewportOverlapArea(el) {
+    const rect = el.getBoundingClientRect();
+    const w = Math.max(0, Math.min(innerWidth, rect.right) - Math.max(0, rect.left));
+    const h = Math.max(0, Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top));
+    return w * h;
+  }
+
+  // 이미지나 그 이미지를 담은 요소에 걸린 유한한 전환·애니메이션(장 넘김 슬라이드·페이드 등)이 끝나기를 기다린다.
+  // DOM은 이미 새 그림을 가리켜도 화면에는 아직 이전 그림이 보이는 동안 캡처하지 않기 위해서다. 멈춰 둔 애니메이션에서
+  // 영영 기다리지 않도록 각 애니메이션 자신의 남은 시간까지만 기다린다. 화면에 보이지 않거나 너무 작은 이미지(무관한
+  // 광고 등)에 걸린 애니메이션은 기다리지 않는다(imageCandidates의 최소 크기 기준과 맞춘다).
+  function imageAnimationsDone() {
+    if (typeof document.getAnimations !== "function") return Promise.resolve();
+    const waits = [];
+    for (const animation of document.getAnimations()) {
+      const target = animation.effect && animation.effect.target;
+      if (!(target instanceof Element) || animation.playState !== "running") continue;
+      const imgs = target.tagName === "IMG" ? [target] : target.querySelectorAll("img");
+      const relevant = Array.from(imgs).some((candidateImg) =>
+        isImageVisible(candidateImg) && viewportOverlapArea(candidateImg) >= 60 * 30);
+      if (!relevant) continue;
+      const end = animation.effect.getComputedTiming().endTime;
+      if (!Number.isFinite(end)) continue;
+      const left = (end - Number(animation.currentTime || 0)) / Math.abs(animation.playbackRate || 1);
+      waits.push(Promise.race([
+        animation.finished.catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, Math.max(0, left)))
+      ]));
+    }
+    return Promise.all(waits);
+  }
+
+  /** 후보를 고른 때와 같은 그림이 같은 자리에 다 불러와진 채로 있는지. */
+  function candidateUnchanged(candidate) {
+    const img = candidate.img;
+    if (!img.isConnected || !img.complete || candidate.key !== imageKey(img)) return false;
+    // 백그라운드 캡처 빈도 제한으로 기다리는 사이 보이지 않게 된(투명해지거나 숨겨진) 그림은 캡처에 찍히지 않는다.
+    if (!isImageVisible(img)) return false;
+    const now = img.getBoundingClientRect();
+    return Math.abs(now.left - candidate.rect.left) <= 1 && Math.abs(now.top - candidate.rect.top) <= 1 &&
+      Math.abs(now.width - candidate.rect.width) <= 1 && Math.abs(now.height - candidate.rect.height) <= 1;
+  }
+
   async function imagePass(pageGen) {
     repositionOverlays();
     if (!state.images || document.visibilityState !== "visible") return;
-    const candidates = imageCandidates();
+    // 고르기 전에 화면 전환이 끝나기를 기다린다(끝난 뒤 자리에서 골라야 캡처와 맞는다).
+    await imageAnimationsDone();
+    if (!stillCurrent(pageGen) || document.visibilityState !== "visible") return;
+    repositionOverlays();
+    let candidates = imageCandidates();
     if (!candidates.length) return;
     const scrollGen = state.scrollGen;
     const sx = scrollX;
     const sy = scrollY;
     const viewport = { w: innerWidth, h: innerHeight };
-    const regions = candidates.map((c, index) => ({ k: `i${index}`, x: c.clip.x, y: c.clip.y, w: c.clip.w, h: c.clip.h }));
     const target = state.target;
     const engine = state.engine;
 
     ocrInFlight = true;
     try {
+      // complete는 데이터를 다 받았다는 뜻일 뿐 새 그림이 화면에 그려졌다는 뜻이 아니다(디코딩은 따로 늦게 끝날 수 있고,
+      // 그동안 화면에는 이전 그림이 남을 수 있다). 디코딩이 끝난 뒤 프레임을 넘겨야 캡처에 새 그림이 찍힌다.
+      // 디코딩이 실패한(깨졌거나 취소된) 그림은 화면에 제대로 그려지지 않으므로 애초에 캡처·OCR 대상에서 뺀다.
+      const decoded = await Promise.all(candidates.map((c) => c.img.decode().then(() => true, () => false)));
+      candidates = candidates.filter((c, index) => decoded[index]);
+      if (!candidates.length) return;
       // 자기 덮개를 OCR하지 않도록 캡처 동안만 숨긴다.
       if (layerHost) layerHost.style.visibility = "hidden";
-      await nextFrames(2);
       let capture;
       try {
+        await nextFrames(2);
+        // 기다리는 사이 그림·자리가 바뀐 후보는 캡처에 다른 그림이 찍히므로 뺀다.
+        candidates = candidates.filter(candidateUnchanged);
+        if (!candidates.length || !stillCurrent(pageGen) || scrollGen !== state.scrollGen) return;
         capture = await send({ cmd: "capture" });
       } finally {
         applyLayerVisibility();
       }
-      if (scrollGen !== state.scrollGen || pageGen !== state.pageGen || scrollX !== sx || scrollY !== sy) return;
+      if (!stillCurrent(pageGen) || scrollGen !== state.scrollGen || scrollX !== sx || scrollY !== sy) return;
+      // 백그라운드는 캡처 빈도 제한 때문에 찍기 전에 기다릴 수 있다. 그사이 바뀐 후보는 찍힌 그림과 맞지 않으므로 뺀다.
+      candidates = candidates.filter(candidateUnchanged);
+      if (!candidates.length) return;
+      const regions = candidates.map((c, index) => ({ k: `i${index}`, x: c.clip.x, y: c.clip.y, w: c.clip.w, h: c.clip.h }));
       const response = await send({ cmd: "ocr", captureId: capture.captureId, target, engine, viewport, regions });
       // 결과가 오는 사이 스크롤·이동·언어·엔진 변경이 있었으면 위치가 맞지 않으므로 버린다.
-      if (scrollGen !== state.scrollGen || pageGen !== state.pageGen || target !== state.target || engine !== state.engine ||
+      if (!stillCurrent(pageGen) || scrollGen !== state.scrollGen || target !== state.target || engine !== state.engine ||
           scrollX !== sx || scrollY !== sy) return;
       if (response.missing.length) state.warning = `언어 팩 필요: ${response.missing.join(", ")}`;
       if (response.warning) state.warning = response.warning;
       for (const image of response.images) {
         const index = Number(String(image.k).slice(1));
         const candidate = candidates[index];
-        if (!candidate || `i${index}` !== image.k || !candidate.img.isConnected) continue;
-        // 캡처를 보낸 뒤 OCR 응답이 오기까지 사이에 이 이미지의 currentSrc가 바뀌었으면(같은 엘리먼트를 재사용하는
-        // 리더에서 다음/이전 이미지로 넘어간 경우) 방금 받은 글자는 이제는 없는 예전 이미지 것이므로 버린다.
-        if (candidate.key !== imageKey(candidate.img)) continue;
+        if (!candidate || `i${index}` !== image.k) continue;
+        // OCR을 기다리는 사이 이 이미지가 다른 그림으로 바뀌었거나(src·currentSrc) 새 그림을 불러오는 중이거나(!complete)
+        // 자리·크기가 달라졌으면(같은 엘리먼트를 재사용하거나 옮기는 리더) 방금 받은 글자는 예전 그림 것이므로 버린다.
+        if (!candidateUnchanged(candidate)) continue;
         renderImage(candidate, image.items, image.langs);
       }
     } finally {
@@ -418,12 +493,21 @@
 
   // MARK: 번역 실행
 
+  /** 주소가 바뀌었으면(해시·pushState 포함) 이전 결과를 모두 무효화하고 true를 돌려준다. */
   function checkNavigation() {
-    if (location.href === state.url) return;
+    if (location.href === state.url) return false;
     state.url = location.href;
     state.pageGen += 1;
     clearImageOverlays();
     send({ cmd: "cancel" }).catch(() => {});
+    return true;
+  }
+
+  // 진행 중인 패스가 await에서 돌아올 때마다 부른다. pushState처럼 이벤트 없는 이동은 여기서야 알 수 있으므로,
+  // 그사이 주소가 바뀌었으면 결과를 버리고 이번 패스가 끝난 뒤 새 페이지로 한 번 더 돈다(자동 번역일 때만 실제로 돈다).
+  function stillCurrent(pageGen) {
+    if (checkNavigation()) state.rerun = true;
+    return pageGen === state.pageGen;
   }
 
   async function runPass(manual = false) {
@@ -510,33 +594,65 @@
     if (ocrInFlight) send({ cmd: "cancel", kind: "ocr" }).catch(() => {});
   }
 
+  // 한 묶음 안의 변경을 끝까지 본다(앞쪽 글자 변경 때문에 뒤쪽 이미지 src 변경·제거를 놓치지 않게). 무효화는 수동 번역 뒤에도
+  // 하고, 새 통과는 자동 번역일 때만 건다. 해시·pushState 이동도 대개 DOM 변경을 동반하므로 여기서 주소를 다시 확인한다.
   const observer = new MutationObserver((mutations) => {
-    if (!state.auto || state.view !== "translated") return;
+    let changed = checkNavigation();
+    let removed = false;
     for (const mutation of mutations) {
       if (mutation.type === "attributes") {
         const target = mutation.target;
-        if (target.tagName === "IMG") invalidateImage(target);
-        else if (target.tagName === "SOURCE") {
+        // 캡처 동안 숨김/보임을 스스로 토글하는 자기 덮개 호스트의 style 변화는 제 꼬리를 물어 무한히 다시 도는
+        // 일을 막기 위해 여기서 완전히 무시한다(닫힌 Shadow DOM 안쪽은 애초에 이 감시 범위 밖이라 안전하다).
+        if (target === layerHost) continue;
+        const attr = mutation.attributeName;
+        if (target.tagName === "IMG") {
+          invalidateImage(target);
+          changed = true;
+        } else if (target.tagName === "SOURCE") {
+          if (attr !== "src" && attr !== "srcset") continue;
           const picture = target.parentElement;
           const img = picture && picture.tagName === "PICTURE" ? picture.querySelector("img") : null;
           if (img) invalidateImage(img);
+          changed = true;
+        } else if (attr === "class" || attr === "style") {
+          // pushState로 넘어가는 리더 등에서 미리 받아 둔 다음 그림을 보여줄 때 src는 그대로 두고 class/style만
+          // 바꿔 보이기/숨기기를 토글하는 경우가 있다. src·srcset 감시만으로는 이런 전환을 전혀 보지 못하므로,
+          // 이미지를 담은 요소(이미지 자신 포함 안 되는 경우만 여기로 옴)의 class/style 변화도 본다. 이미지와
+          // 무관한 요소의 흔한 class 토글(테마·모달 등)까지 번역을 다시 걸지 않도록, 그 안에 실제 이미지가
+          // 있을 때만(추적 중인 덮개가 있거나 img 자손이 있을 때만) 반응한다.
+          let relevant = false;
+          for (const img of imageRecords.keys()) {
+            if (target.contains(img)) { invalidateImage(img); relevant = true; }
+          }
+          if (!relevant && target.querySelector("img")) relevant = true;
+          if (relevant) changed = true;
         }
-        return onPageChanged();
-      }
-      if (mutation.type === "characterData") {
+      } else if (mutation.type === "characterData") {
         const record = records.get(mutation.target);
         if (record && (mutation.target.nodeValue === record.translated || mutation.target.nodeValue === record.original)) continue;
-        return onPageChanged();
-      }
-      for (const node of mutation.addedNodes) {
-        if (node !== layerHost) return onPageChanged();
+        changed = true;
+      } else {
+        if (mutation.removedNodes.length) removed = true;
+        for (const node of mutation.addedNodes) {
+          if (node !== layerHost) changed = true;
+        }
       }
     }
+    // 문서에서 빠진 이미지의 덮개는 다음 통과를 기다리지 않고 바로 지운다.
+    if (removed) {
+      for (const [img, record] of imageRecords) {
+        if (img.isConnected) continue;
+        record.box.remove();
+        imageRecords.delete(img);
+      }
+    }
+    if (changed) onPageChanged();
   });
   let observing = false;
 
   function onPageChanged() {
-    schedule();
+    if (state.auto && state.view === "translated") schedule();
   }
 
   // 로딩 중이라 이번 통과에서 건너뛴 이미지(imageCandidates의 !img.complete)는 로드가 끝나야 OCR할 수 있으므로,
@@ -549,7 +665,7 @@
     if (on && !observing && document.body) {
       observer.observe(document.body, {
         childList: true, subtree: true, characterData: true,
-        attributes: true, attributeFilter: ["src", "srcset"]
+        attributes: true, attributeFilter: ["src", "srcset", "class", "style"]
       });
       document.addEventListener("load", onImageLoad, true);
       observing = true;
@@ -594,10 +710,12 @@
   addEventListener("resize", onScroll, { passive: true });
   document.addEventListener("fullscreenchange", onFullscreenChange);
   document.addEventListener("webkitfullscreenchange", onFullscreenChange);
-  addEventListener("popstate", () => {
+  function onHistoryChange() {
     checkNavigation();
     if (state.auto && state.view === "translated") schedule();
-  });
+  }
+  addEventListener("popstate", onHistoryChange);
+  addEventListener("hashchange", onHistoryChange);
   addEventListener("pagehide", () => send({ cmd: "cancel" }).catch(() => {}));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
@@ -659,7 +777,9 @@
           clearImageOverlays();
           send({ cmd: "cancel" }).catch(() => {});
         }
-        setObserving(state.auto);
+        // 수동 번역 뒤에도 감시는 켜 둔다: 페이지가 바뀌면 이전 결과를 지우는 데만 쓰고, 새 번역은 자동일 때만 한다.
+        // 끄는 것은 원문 보기(toggleOriginal)뿐이다.
+        if (state.auto || message.translateNow === true) setObserving(true);
         if (message.translateNow === true) {
           setView("translated");
           clearTimeout(state.timer);
@@ -684,6 +804,8 @@
         state.timer = 0;
         state.pageGen += 1;
         state.scrollGen += 1;
+        // 원문 보기 동안은 감시하지 않으므로 그사이 바뀐 그림의 덮개가 다음 번역 때 잠깐이라도 다시 보이지 않게 지운다.
+        clearImageOverlays();
         setView("original");
         sendResponse(snapshot());
         return false;
