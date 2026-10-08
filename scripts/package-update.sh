@@ -27,11 +27,11 @@ fi
 
 SIGN_TIMESTAMP=1 "$ROOT_DIR/build.sh"
 
-APP="$ROOT_DIR/build/ScreenTranslator.app"
+APP="$ROOT_DIR/build/SMTranslator.app"
 SIGN_IDENTITY="${SIGN_IDENTITY:-56C14CF3A623A4C64AF71A3D63C248FEAB4D8DB8}"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 RELEASE_DIR="$ROOT_DIR/build/release/v$VERSION"
-DMG="$RELEASE_DIR/ScreenTranslator-$VERSION.dmg"
+DMG="$RELEASE_DIR/SMTranslator-$VERSION.dmg"
 STAGING="$(mktemp -d /private/tmp/screentranslator-dmg.XXXXXX)"
 trap 'rm -rf "$STAGING"' EXIT
 
@@ -39,9 +39,9 @@ rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 
 echo "==> DMG 생성"
-ditto "$APP" "$STAGING/ScreenTranslator.app"
+ditto "$APP" "$STAGING/SMTranslator.app"
 ln -s /Applications "$STAGING/Applications"
-hdiutil create -volname "ScreenTranslator $VERSION" -srcfolder "$STAGING" -format UDZO -ov "$DMG" >/dev/null
+hdiutil create -volname "SMTranslator $VERSION" -srcfolder "$STAGING" -format UDZO -ov "$DMG" >/dev/null
 codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
 
 if [ -n "${NOTARY_PROFILE:-}" ]; then

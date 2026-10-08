@@ -1,5 +1,5 @@
 #!/bin/bash
-# ScreenTranslator.app 빌드 스크립트
+# SMTranslator.app 빌드 스크립트
 # 사용법: ./build.sh
 #   SIGN_IDENTITY  : 서명 인증서 SHA1 (기본: 기존 Developer ID Application, 팀 T7B4EPLHPK)
 #   SIGN_TIMESTAMP : 1이면 보안 타임스탬프 포함(배포/공증용, 네트워크 필요)
@@ -7,11 +7,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
-APP_NAME="ScreenTranslator"
+APP_NAME="SMTranslator"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-EXECUTABLE_NAME="ScreenTranslator"
+EXECUTABLE_NAME="SMTranslator"
 BUNDLE_ID="com.local.screentranslator"
 SPARKLE_DIR="$ROOT_DIR/Vendor/Sparkle"
+# 앱 본체 권한: Mail 선택 메시지 읽기용 Apple Events만(hardened runtime 유지, 라이브러리 검증 완화 없음)
+ENTITLEMENTS="$ROOT_DIR/Resources/SMTranslator.entitlements"
 SIGN_IDENTITY="${SIGN_IDENTITY:-56C14CF3A623A4C64AF71A3D63C248FEAB4D8DB8}"
 
 # shellcheck source=update-config.env
@@ -53,6 +55,10 @@ xcrun swiftc \
   -framework Translation \
   -framework ServiceManagement \
   -framework Carbon \
+  -framework WebKit \
+  -framework NaturalLanguage \
+  -framework UniformTypeIdentifiers \
+  -framework ApplicationServices \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" \
   "$ROOT_DIR"/Sources/*.swift
@@ -60,6 +66,8 @@ xcrun swiftc \
 echo "==> 리소스/Info.plist/프레임워크 복사"
 cp "$ROOT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+# 외부 AI(AIBI 0.5.3) 공통 런타임과 제공사 레지스트리 — 메일 번역기 원본과 같은 파일
+cp "$ROOT_DIR/Resources/aibi-browser-runtime.js" "$ROOT_DIR/Resources/aibi-providers.json" "$APP_BUNDLE/Contents/Resources/"
 ditto "$SPARKLE_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
 PLIST="$APP_BUNDLE/Contents/Info.plist"
@@ -93,8 +101,9 @@ codesign "${SIGN_ARGS[@]}" "$FW/Versions/B/Autoupdate"
 codesign "${SIGN_ARGS[@]}" "$FW/Versions/B/Updater.app"
 codesign "${SIGN_ARGS[@]}" "$FW"
 
-echo "==> 앱 서명 (identity: $SIGN_IDENTITY, identifier: $BUNDLE_ID)"
-codesign "${SIGN_ARGS[@]}" --identifier "$BUNDLE_ID" "$APP_BUNDLE"
+echo "==> 앱 서명 (identity: $SIGN_IDENTITY, identifier: $BUNDLE_ID, entitlements: Apple Events)"
+plutil -lint "$ENTITLEMENTS" >/dev/null
+codesign "${SIGN_ARGS[@]}" --entitlements "$ENTITLEMENTS" --identifier "$BUNDLE_ID" "$APP_BUNDLE"
 
 codesign --verify --deep --strict "$APP_BUNDLE"
 echo "==> 빌드 완료: $APP_BUNDLE"

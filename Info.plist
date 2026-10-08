@@ -3,19 +3,19 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>ScreenTranslator</string>
+	<string>SMTranslator</string>
 	<key>CFBundleDisplayName</key>
-	<string>화면 번역기</string>
+	<string>스크린 메일 번역기</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.local.screentranslator</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.1</string>
+	<string>0.2.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.1</string>
+	<string>0.2.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
-	<string>ScreenTranslator</string>
+	<string>SMTranslator</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>LSMinimumSystemVersion</key>
@@ -32,6 +32,59 @@
 	<string>Copyright © 2026 armsone</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>선택한 화면 영역의 텍스트를 인식해 번역을 표시하기 위해 화면 기록 권한이 필요합니다.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>'선택한 메일 번역'(메뉴 막대, ⌃⌥⇧⌘M, Mail 위 번역 버튼, Mail › 서비스 › '메일 전체 번역')을 실행할 때에만 Mail에서 현재 선택된 메시지의 원본을 읽어 번역합니다. 기본 번역 방식은 이 Mac 안에서 처리하며, 외부 AI(ChatGPT·Claude·Gemini)를 고르고 전송에 동의한 경우에만 제목·본문·이미지 글자를 해당 서비스로 보냅니다. 메시지를 보내거나 수정하지 않으며 메일 파일을 별도로 저장하지 않습니다.</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>이메일 메시지</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.apple.mail.email</string>
+				<string>public.email-message</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>이미지</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.image</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>메일 전체 번역</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>translateSelectedMessage</string>
+			<key>NSPortName</key>
+			<string>SMTranslator</string>
+			<key>NSRequiredContext</key>
+			<dict>
+				<key>NSApplicationIdentifier</key>
+				<array>
+					<string>com.apple.mail</string>
+				</array>
+			</dict>
+			<key>NSServiceDescription</key>
+			<string>Mail에서 선택한 메시지 전체(본문, 제목, 이미지 속 글자)를 번역해 스크린 메일 번역기의 메일 번역 창에 보여 줍니다.</string>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
 	<string>https://github.com/armsone/ScreenTranslator-MacOS-Updates/releases/latest/download/appcast.xml</string>
 	<key>SUEnableAutomaticChecks</key>

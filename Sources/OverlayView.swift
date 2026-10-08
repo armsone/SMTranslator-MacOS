@@ -204,16 +204,40 @@ final class OverlayBorderView: NSView {
     }
 }
 
+/// 헤더 끌기 공통 처리. 마우스 다운 뒤 실제로 1pt라도 움직인 첫 끌기 이벤트에서만
+/// onWillMove를 부르고(창이 움직이기 전) 그 이벤트로 네이티브 performDrag(with:)를 시작한다.
+/// 움직이지 않고 놓은 클릭은 아무것도 부르지 않는다. didMove 관찰·폴링 없이 이 한 지점에서만 이동을 감지한다.
+enum HeaderDrag {
+    @MainActor
+    static func track(from mouseDown: NSEvent, in window: NSWindow, onWillMove: (() -> Void)?) {
+        let start = window.convertPoint(toScreen: mouseDown.locationInWindow)
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            guard event.type == .leftMouseDragged else { return }
+            let point = window.convertPoint(toScreen: event.locationInWindow)
+            guard point != start else { continue }
+            onWillMove?()
+            // 첫 이벤트까지 움직인 만큼 창을 맞춰 커서와 창의 상대 위치를 유지한 채 창 서버 이동에 넘긴다.
+            let origin = window.frame.origin
+            window.setFrameOrigin(NSPoint(x: origin.x + point.x - start.x, y: origin.y + point.y - start.y))
+            window.performDrag(with: event)
+            return
+        }
+    }
+}
+
 /// 크기 조절 전용 투명 히트 뷰. 마우스 다운 시점의 창 프레임/마우스 위치 스냅샷과
 /// 이후 이동량만으로 새 프레임을 계산한다(OCR·레이아웃 재계산 없음).
 final class ResizeHandleView: NSView {
     let region: HitRegion
     var isEnabled = true
     var onResizeBegan: (() -> Void)?
+    /// 이번 끌기에서 프레임이 실제로 처음 바뀌기 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
+    var onResizeWillChange: (() -> Void)?
     var onResizeEnded: (() -> Void)?
 
     private var startMouse: NSPoint = .zero
     private var startFrame: NSRect = .zero
+    private var didChangeFrame = false
 
     init(region: HitRegion) {
         self.region = region
@@ -233,10 +257,12 @@ final class ResizeHandleView: NSView {
         if isEnabled { addCursorRect(bounds, cursor: region.cursor) }
     }
 
+    /// 마우스 다운만으로는 결과를 지우지 않는다. 첫 실제 프레임 변경 직전에 onResizeWillChange를 부른다.
     override func mouseDown(with event: NSEvent) {
         guard isEnabled, let window else { return }
         startMouse = NSEvent.mouseLocation
         startFrame = window.frame
+        didChangeFrame = false
         onResizeBegan?()
         region.cursor.set()
     }
@@ -268,8 +294,13 @@ final class ResizeHandleView: NSView {
             break
         }
 
-        if f != window.frame {
-            window.setFrame(f.integral, display: true)
+        let target = f.integral
+        if target != window.frame {
+            if !didChangeFrame {
+                didChangeFrame = true
+                onResizeWillChange?()
+            }
+            window.setFrame(target, display: true)
         }
         region.cursor.set()
     }
@@ -294,6 +325,8 @@ final class HeaderBackgroundView: NSView {
 
     /// 툴바의 SwiftUI 컨트롤이 소비하지 않은 빈 곳 클릭이 여기로 오면 창을 이동한다.
     var isDragEnabled = true
+    /// 실제로 움직이기 시작한 첫 끌기에서 performDrag(with:) 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
+    var onDragWillMove: (() -> Void)?
     var onDragFinished: (() -> Void)?
 
     override var isOpaque: Bool { false }
@@ -302,23 +335,27 @@ final class HeaderBackgroundView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isDragEnabled, let window else { return }
-        window.performDrag(with: event)
+        HeaderDrag.track(from: event, in: window, onWillMove: onDragWillMove)
         onDragFinished?()
     }
 }
 
-/// 헤더 맨 위 전체 너비의 제목/이동 스트립. 닫기(숨기기)·주 버튼 외의 어디를 눌러도
-/// 네이티브 NSWindow.performDrag(with:)로 창을 이동한다(이동·크기 잠금 시 비활성).
+/// 헤더 맨 위 전체 너비의 제목/이동 스트립. 닫기(숨기기)·주 버튼 외의 어디를 끌어도
+/// 네이티브 NSWindow.performDrag(with:)로 창을 이동한다(HeaderDrag, 이동·크기 잠금 시 비활성).
 /// 주 버튼('번역' ↔ '원문보기')은 단축키(Space/Enter)가 있어 작게 두며, 창 이동을
 /// 가로채지 않도록 closeButton과 같은 방식으로 hitTest에서 직접 가로챈다.
 final class TitleDragStripView: NSView {
     var isDragEnabled = true
+    /// 실제로 움직이기 시작한 첫 끌기에서 performDrag(with:) 직전에 한 번 호출된다(그냥 클릭이면 호출되지 않음).
+    var onDragWillMove: (() -> Void)?
     var onDragFinished: (() -> Void)?
 
     let closeButton: NSButton
     let primaryButton: NSButton
-    private let titleLabel = NSTextField(labelWithString: "화면 번역기")
+    private let titleLabel = NSTextField(labelWithString: "스크린 메일 번역기")
     let statusLabel = NSTextField(labelWithString: "")
+    /// 외부 AI 답변 대기 남은 시간(1:59 → 0:00)을 줄어드는 막대로 보여준다. 그 외에는 숨긴다.
+    let remainingBar = NSProgressIndicator()
 
     override init(frame frameRect: NSRect) {
         let image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "창 숨기기") ?? NSImage()
@@ -345,7 +382,14 @@ final class TitleDragStripView: NSView {
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.cell?.truncatesLastVisibleLine = true
 
-        [closeButton, titleLabel, statusLabel, primaryButton].forEach(addSubview)
+        remainingBar.style = .bar
+        remainingBar.isIndeterminate = false
+        remainingBar.controlSize = .small
+        remainingBar.minValue = 0
+        remainingBar.maxValue = 1
+        remainingBar.isHidden = true
+
+        [closeButton, titleLabel, statusLabel, remainingBar, primaryButton].forEach(addSubview)
         toolTip = "이 줄이나 툴바 위 빈 곳을 끌어 창을 이동합니다 (이동·크기 잠금 시 이동 불가)"
     }
 
@@ -371,9 +415,15 @@ final class TitleDragStripView: NSView {
                                   height: primaryButton.frame.height)
         primaryButton.frame = buttonFrame
 
+        var trailingX = buttonFrame.minX
+        if !remainingBar.isHidden {
+            let barWidth: CGFloat = 60
+            remainingBar.frame = NSRect(x: trailingX - 8 - barWidth, y: (h - 10) / 2, width: barWidth, height: 10)
+            trailingX = remainingBar.frame.minX
+        }
         let statusX = titleLabel.frame.maxX + 10
         let statusHeight = statusLabel.intrinsicContentSize.height
-        let statusWidth = max(0, buttonFrame.minX - 8 - statusX)
+        let statusWidth = max(0, trailingX - 8 - statusX)
         statusLabel.frame = NSRect(x: statusX, y: (h - statusHeight) / 2, width: statusWidth, height: statusHeight)
     }
 
@@ -387,7 +437,7 @@ final class TitleDragStripView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isDragEnabled, let window else { return }
-        window.performDrag(with: event)
+        HeaderDrag.track(from: event, in: window, onWillMove: onDragWillMove)
         onDragFinished?()
     }
 }

@@ -2,13 +2,14 @@ import SwiftUI
 import Translation
 import AppKit
 
-/// 통합 창 헤더 아래쪽 툴바 행. 언어 선택, 항상 위, 이동·크기 잠금, 복사, 색상 설정을
+/// 통합 창 헤더 아래쪽 툴바 행. 언어 선택, 번역 방식(메일과 공용), 항상 위, 이동·크기 잠금, 복사, 색상 설정을
 /// 담는다. 주 버튼('번역' ↔ '원문보기')은 위쪽 제목 스트립으로 옮겨졌으며(TitleDragStripView),
 /// 닫기(숨기기)도 그 줄과 메뉴 막대 메뉴에 있다. 이 뷰의 .translationTask는 주 버튼의 위치와
 /// 무관하게 창이 보이는 동안 계속 살아 있어야 하므로 버튼 유무와 분리해 HStack에 붙여 둔다.
 struct ToolbarView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var isColorPopoverPresented = false
+    @State private var methods = TranslationBackendStore.shared
 
     private var isLocked: Binding<Bool> {
         Binding(get: { !viewModel.isAdjustable }, set: { viewModel.isAdjustable = !$0 })
@@ -37,6 +38,30 @@ struct ToolbarView: View {
             .labelsHidden()
             .frame(width: 92)
             .help("번역 언어")
+
+            Menu {
+                Picker("번역 방식", selection: $methods.backend) {
+                    ForEach(TranslationBackend.allCases.filter { !$0.isExternal }) { backend in
+                        Text("\(backend.title) — \(backend.detail)")
+                            .tag(backend)
+                            .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
+                    }
+                    Divider()
+                    ForEach(TranslationBackend.allCases.filter(\.isExternal)) { backend in
+                        Text("\(backend.title) — \(backend.detail)").tag(backend)
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Button("외부 AI 로그인·설정…") { MailWindowCoordinator.shared.showSettings() }
+            } label: {
+                Text(methods.backend.shortTitle)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(methods.backend.isExternal
+                  ? "번역 방식: \(methods.backend.title) 웹 계정. 고르기만 해서는 보내지 않으며, 번역을 누를 때만 이 영역에서 인식한 글자(텍스트)를 보냅니다. 스크린샷 이미지는 보내지 않습니다. 메일 번역과 같은 방식을 씁니다."
+                  : "번역 방식: \(methods.backend.title). 이 Mac 안에서 번역합니다. 메일 번역과 같은 방식을 씁니다.")
 
             Divider().frame(height: 16)
 

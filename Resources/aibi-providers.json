@@ -1,0 +1,382 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIBI Provider Configurations",
+  "version": "1.2.0",
+  "updatedAt": "2026-09-10",
+  "volatilityNotice": "Web application DOM structures change frequently. Maintain and update these selector chains independently of core orchestrator logic.",
+  "providers": {
+    "gemini": {
+      "id": "gemini",
+      "displayName": "Google Gemini",
+      "status": "active",
+      "initialUrl": "https://gemini.google.com/app",
+      "allowedScriptOrigins": [
+        "https://gemini.google.com"
+      ],
+      "allowedAuthOrigins": [
+        "https://accounts.google.com",
+        "https://myaccount.google.com",
+        "https://support.google.com"
+      ],
+      "mediaCapabilities": {
+        "supportsImages": true,
+        "maxImagesPerTask": 20,
+        "requiresMultipleInputForBatch": true
+      },
+      "selectors": {
+        "promptInput": [
+          "div.ql-editor[contenteditable='true']",
+          "textarea[aria-label*='prompt' i]",
+          "rich-textarea p",
+          "div[role='textbox']"
+        ],
+        "submitButton": [
+          "button[aria-label*='Send' i]",
+          "button[aria-label*='보내기' i]",
+          "button.send-button",
+          "button[mat-icon-button][aria-label*='send' i]"
+        ],
+        "stopButton": [
+          "button[aria-label*='Stop' i]",
+          "button[aria-label*='중지' i]",
+          "button.stop-generating-button"
+        ],
+        "assistantMessage": [
+          "model-response .markdown",
+          "message-content .markdown",
+          "message-content",
+          "model-response",
+          "div.model-response-text",
+          "div[data-test-id='model-response']",
+          ".response-container-content"
+        ],
+        "preCode": [
+          "pre code",
+          "code-block pre"
+        ],
+        "errorBanner": [
+          ".error-message",
+          "[data-test-id='error-card']",
+          ".sparkle-error-container"
+        ],
+        "loginIndicator": [
+          "a[href*='accounts.google.com/ServiceLogin']",
+          "a[href*='accounts.google.com/InteractiveLogin']",
+          "a[aria-label*='Sign in' i]",
+          "button[aria-label*='로그인' i]"
+        ],
+        "authenticatedIndicator": [
+          "a[aria-label*='Google Account' i]",
+          "a[aria-label*='Google 계정' i]",
+          "a[href*='accounts.google.com/SignOutOptions']",
+          "a[href*='myaccount.google.com']",
+          "gem-user-menu"
+        ],
+        "challengeIndicator": [
+          "iframe[src*='recaptcha']",
+          "div.g-recaptcha",
+          "#challenge-stage"
+        ],
+        "attachmentInput": [
+          "input[type='file'][accept*='image']",
+          "input[type='file'][accept*='.jpg']",
+          "input[type='file'][accept*='.jpeg']",
+          "input[type='file'][accept*='.png']",
+          "input[type='file']"
+        ],
+        "attachmentTrigger": [
+          "button[aria-label*='업로드 및 도구']",
+          "gem-icon-button[arialabel*='업로드']",
+          "button[aria-label*='Upload']",
+          "button[aria-label*='Add files']",
+          "button[aria-label*='이미지']",
+          "button[aria-label*='사진']",
+          "button[aria-label*='파일 추가']"
+        ],
+        "attachmentMenuAction": [
+          "images-files-uploader[data-test-id='uploader-images-files-button-advanced'] button",
+          "[data-test-id='uploader-images-files-button-advanced'] button",
+          "button[aria-label='파일']",
+          "[role='menuitem'][aria-label='파일']",
+          "button[aria-label='Files']",
+          "[role='menuitem'][aria-label='Files']"
+        ],
+        "attachmentMenuActionText": [
+          "파일",
+          "Files",
+          "Upload files",
+          "Upload from device"
+        ],
+        "attachmentPreview": [
+          "button[aria-label='첨부파일 닫기']",
+          "button[aria-label='Remove attachment']",
+          "button[aria-label='Remove file']",
+          "uploader-file-preview",
+          ".attachment-preview-wrapper",
+          ".file-preview-container",
+          "div[data-test-id*='file-preview']",
+          "div[class*='uploader-file']"
+        ]
+      },
+      "quirks": {
+        "isContentEditable": true,
+        "requiresEnterEvent": false,
+        "notes": "Gemini uses Quill rich editor (ql-editor). Its current mobile upload flow is nested: open '업로드 및 도구', then choose the visible '파일' action before WebKit presents the multiple file input. Image attachment must prefer accept=image."
+      }
+    },
+    "chatgpt": {
+      "id": "chatgpt",
+      "displayName": "OpenAI ChatGPT",
+      "status": "active",
+      "initialUrl": "https://chatgpt.com/",
+      "allowedScriptOrigins": [
+        "https://chatgpt.com",
+        "https://chat.openai.com"
+      ],
+      "allowedAuthOrigins": [
+        "https://auth0.openai.com",
+        "https://auth.openai.com",
+        "https://accounts.google.com",
+        "https://appleid.apple.com",
+        "https://login.microsoftonline.com"
+      ],
+      "mediaCapabilities": {
+        "supportsImages": true,
+        "maxImagesPerTask": 20,
+        "requiresMultipleInputForBatch": true
+      },
+      "selectors": {
+        "promptInput": [
+          "#prompt-textarea",
+          "textarea[data-id='root']",
+          "div[contenteditable='true']#prompt-textarea",
+          "div[role='textbox']"
+        ],
+        "submitButton": [
+          "button[data-testid='send-button']",
+          "button[aria-label*='Send' i]",
+          "button[aria-label*='보내기' i]",
+          "button:has(svg[data-icon='arrow-up'])"
+        ],
+        "stopButton": [
+          "button[data-testid='stop-button']",
+          "button[aria-label*='Stop' i]",
+          "button[aria-label*='중지' i]"
+        ],
+        "assistantMessage": [
+          "[data-message-author-role='assistant']",
+          "div.agent-turn",
+          "article[data-turn='assistant']",
+          "article[data-testid*='conversation-turn'] [data-message-author-role='assistant']",
+          "article[data-testid*='conversation-turn'] .markdown",
+          "div[data-testid*='conversation-turn'] .markdown",
+          "[data-testid='assistant-message']",
+          "[data-role='assistant']",
+          ".markdown"
+        ],
+        "preCode": [
+          "pre code",
+          "div.code-block pre"
+        ],
+        "errorBanner": [
+          ".text-red-500",
+          "[data-testid*='error-notification']",
+          "div.border-red-500"
+        ],
+        "loginIndicator": [
+          "button[data-testid='login-button']",
+          "a[href*='/auth/login']",
+          "button:contains('Log in')"
+        ],
+        "authenticatedIndicator": [
+          "button[data-testid='profile-button']",
+          "button[data-testid='user-menu-button']",
+          "button[data-testid='user-menu']",
+          "button[data-testid='accounts-profile-button']",
+          "button[aria-label*='profile menu' i]",
+          "button[aria-label*='프로필 메뉴']",
+          "[role='button'][aria-label*='프로필 메뉴']",
+          "[role='button'][aria-label*='profile menu' i]"
+        ],
+        "challengeIndicator": [
+          "#cf-challenge-running",
+          "iframe[src*='challenges.cloudflare.com']",
+          "#challenge-form"
+        ],
+        "attachmentInput": [
+          "input[type='file'][accept*='image']",
+          "input[type='file'][accept*='.jpg']",
+          "input[type='file'][accept*='.jpeg']",
+          "input[type='file'][accept*='.png']",
+          "input[type='file']"
+        ],
+        "attachmentTrigger": [
+          "button[aria-label*='Attach']",
+          "button[aria-label*='첨부']",
+          "button[data-testid='composer-plus-btn']",
+          "button[aria-label*='Add photos']",
+          "button[aria-label*='사진']"
+        ],
+        "attachmentMenuAction": [],
+        "attachmentMenuActionText": [
+          "사진",
+          "Photos",
+          "Upload photos"
+        ],
+        "attachmentPreview": [
+          "div[data-testid*='attachment']",
+          "img[alt='Uploaded image']",
+          "button[aria-label*='uploaded image' i]",
+          "button[aria-label*='업로드한 이미지']",
+          "img[src*='/backend-api/estuary/content']",
+          "div[class*='attachment-tile']"
+        ]
+      },
+      "quirks": {
+        "lateDomReplacement": true,
+        "notes": "ChatGPT can replace the composer during hydration. Re-locate and fill only before dispatch. Choose Photos from the plus menu, count current-composer previews, and retain native source files through task completion. Dispatch once; after input consumption observe only. Empty input is pending, not verified response start. Never re-click a button that may now mean Stop or voice."
+      }
+    },
+    "claude": {
+      "id": "claude",
+      "displayName": "Anthropic Claude",
+      "status": "active",
+      "initialUrl": "https://claude.ai/new",
+      "allowedScriptOrigins": [
+        "https://claude.ai"
+      ],
+      "allowedAuthOrigins": [
+        "https://accounts.google.com",
+        "https://claude.ai/login",
+        "https://claude.ai/api/auth"
+      ],
+      "mediaCapabilities": {
+        "supportsImages": true,
+        "maxImagesPerTask": 20,
+        "requiresMultipleInputForBatch": true
+      },
+      "selectors": {
+        "promptInput": [
+          "div.ProseMirror[contenteditable='true']",
+          "div[contenteditable='true'][role='textbox']",
+          "fieldset div[contenteditable='true']"
+        ],
+        "submitButton": [
+          "button[aria-label*='Send' i]",
+          "button[aria-label*='전송' i]",
+          "button:has(svg[data-icon='paper-plane'])",
+          "fieldset button[type='button']:not([disabled])"
+        ],
+        "stopButton": [
+          "button[aria-label*='Stop' i]",
+          "button[aria-label*='중단' i]",
+          "button[aria-label*='Stop generating' i]",
+          "button[aria-label*='응답 중지']"
+        ],
+        "assistantMessage": [
+          "div[data-is-streaming]",
+          "div.font-claude-message",
+          "div[data-testid='assistant-message']",
+          ".standard-grid .font-user-message + div"
+        ],
+        "preCode": [
+          "pre code",
+          "div.code-block code"
+        ],
+        "errorBanner": [
+          "div[data-testid*='error']",
+          ".bg-danger-100",
+          "div.text-danger"
+        ],
+        "loginIndicator": [
+          "input[type='email'][name='email']",
+          "a[href*='/login']",
+          "button[data-testid*='login']"
+        ],
+        "authenticatedIndicator": [
+          "button[data-testid='user-menu-button']",
+          "button[data-testid='user-menu']"
+        ],
+        "challengeIndicator": [
+          "iframe[src*='cloudflare']",
+          "div#challenge-stage",
+          "iframe[src*='turnstile']"
+        ],
+        "attachmentInput": [
+          "input[type='file'][accept*='image']",
+          "input[type='file'][accept*='.jpg']",
+          "input[type='file'][accept*='.jpeg']",
+          "input[type='file'][accept*='.png']",
+          "input[type='file']"
+        ],
+        "attachmentTrigger": [
+          "button[aria-label*='Attach']",
+          "button[aria-label*='파일']",
+          "button[aria-label*='업로드']"
+        ],
+        "attachmentPreview": [
+          "div[data-testid='file-thumbnail']",
+          "div[data-testid*='attachment']"
+        ]
+      },
+      "quirks": {
+        "proseMirrorEditor": true,
+        "notes": "Claude uses ProseMirror contenteditable editor. Requires synthetic input event with InputEvent constructor and paragraph wrappers."
+      }
+    },
+    "grok": {
+      "id": "grok",
+      "displayName": "xAI Grok",
+      "status": "dormant_excluded",
+      "exclusionRationale": "Excluded from active user roster because internal thinking/working duration and response UI text leaked into extracted results on mobile web.",
+      "initialUrl": "https://grok.com/",
+      "allowedScriptOrigins": [
+        "https://grok.com",
+        "https://x.ai"
+      ],
+      "allowedAuthOrigins": [
+        "https://x.com",
+        "https://twitter.com",
+        "https://auth.x.ai"
+      ],
+      "selectors": {
+        "promptInput": [
+          "textarea[placeholder*='Ask' i]",
+          "textarea.w-full",
+          "div[role='textbox']"
+        ],
+        "submitButton": [
+          "button[aria-label*='Submit' i]",
+          "button[aria-label*='Send' i]",
+          "button:has(svg.lucide-arrow-up)"
+        ],
+        "stopButton": [
+          "button[aria-label*='Stop' i]"
+        ],
+        "assistantMessage": [
+          "div.response-body",
+          "div[data-testid='grok-response']",
+          ".message-bubble-assistant"
+        ],
+        "preCode": [
+          "pre code"
+        ],
+        "errorBanner": [
+          ".text-destructive",
+          "div.error-container"
+        ],
+        "loginIndicator": [
+          "a[href*='/login']",
+          "button:contains('Sign in')"
+        ],
+        "challengeIndicator": [
+          "iframe[src*='challenges']"
+        ]
+      },
+      "quirks": {
+        "workDurationHeaderRegex": "^(Thought for \\d+ seconds?|Thinking Process:?|Thinking:?)\\s*\\n*",
+        "notes": "Kept as reference schema only. Do not display in default user provider list."
+      }
+    }
+  }
+}

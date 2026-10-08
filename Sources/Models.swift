@@ -41,6 +41,8 @@ enum AppStatus: Equatable {
     case capturing
     case recognizing
     case translating(done: Int, total: Int)
+    /// 외부 AI(웹 로그인) 번역 진행: 단계, 답변 대기 남은 시간(생성 확인 뒤에만), 완료 줄 수
+    case externalTranslating(provider: String, stage: String, remaining: TimeInterval?, done: Int, total: Int)
     case completed
     case showingOriginal
     case info(String)
@@ -52,8 +54,15 @@ enum AppStatus: Equatable {
         case .capturing: return "화면 캡처 중"
         case .recognizing: return "텍스트 인식 중"
         case .translating(let done, let total): return "번역 중 (\(done)/\(total)줄)"
-        case .completed: return "완료"
-        case .showingOriginal: return "원문 표시 중"
+        case .externalTranslating(let provider, let stage, let remaining, let done, let total):
+            var text = "\(provider) · \(stage)"
+            if let remaining {
+                let seconds = Int(max(0, remaining).rounded(.down))
+                text += " · 남은 시간 \(seconds / 60):\(String(format: "%02d", seconds % 60))"
+            }
+            return text + " (\(done)/\(total)줄)"
+        case .completed: return "완료 · Space/Enter: 원문보기"
+        case .showingOriginal: return "원문 표시 중 · Space: 저장된 번역 · Enter: 새로 번역"
         case .info(let message): return message
         case .error(let message): return message
         }
@@ -65,8 +74,9 @@ enum AppStatus: Equatable {
     }
 }
 
-/// 주 버튼(제목 스트립 오른쪽)의 현재 동작. 번역이 모두 성공한 결과가 있을 때만
-/// '원문보기'가 되고, 원문을 보여준 뒤에는 다시 '번역'으로 돌아온다.
+/// 주 버튼(제목 스트립 오른쪽)·Enter·메뉴의 현재 동작. 번역이 모두 성공한 결과가 보일 때만
+/// '원문보기'가 되고, 원문을 보여준 뒤에는 다시 '번역'(새 캡처·번역)으로 돌아온다.
+/// Space의 저장된 번역↔원본 전환은 이 값과 별도로 AppViewModel.performCachedToggle이 처리한다.
 enum PrimaryAction {
     case captureAndTranslate
     case showOriginal
