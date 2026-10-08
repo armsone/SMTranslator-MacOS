@@ -489,6 +489,11 @@ final class OverlayPanelController: NSObject {
         patchesView.add(patch: patch)
     }
 
+    /// Apple Intelligence 다듬기 결과로 이미 그려진 같은 줄의 텍스트만 바꾼다(추가 패치 아님, 위치·글꼴 불변).
+    func updateTranslationPatchText(id: Int, text: String) {
+        patchesView.updateText(id: id, text: text)
+    }
+
     /// 글자색/배경색/진하기 설정이 바뀔 때 호출된다. 이미 표시된 패치도 즉시 다시 칠한다.
     func updatePatchColorSettings(_ settings: PatchColorSettings) {
         patchesView.colorSettings = settings

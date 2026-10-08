@@ -77,6 +77,20 @@ struct BrowserExternalFailure: Error {
     let unsupported: Bool
 }
 
+/// Apple Intelligence(기기 내) 다듬기(앱 본체의 Chrome·Whale 엔진 전용). Safari 확장은 앱 설정을 읽을 수 없어
+/// 이 프로토콜을 쓰지 않는다(의도된 범위 제한). Mac 기본 번역 결과만 다듬으며, 거부·오류·취소·형식 오류는
+/// 조용히 건너뛴다(기존 초안 유지). key가 없는 항목은 결과 딕셔너리에 담기지 않는다.
+struct BrowserRefineItem: Sendable {
+    let key: String
+    let original: String
+    let draft: String
+}
+
+protocol BrowserTextRefining: AnyObject, Sendable {
+    var isAvailable: Bool { get }
+    func refine(_ items: [BrowserRefineItem], targetLanguageName: String) async -> [String: String]
+}
+
 /// 지원하지 않는 환경(예: macOS 26 미만의 Safari 확장)에서 쓰는 번역기. 항상 실행 가능한 안내 오류를 낸다.
 final class BrowserUnavailableTranslator: BrowserTextTranslating {
     func supportedLanguageIDs() async -> [String] { [] }
@@ -100,6 +114,12 @@ private struct BrowserViewportInput: Decodable {
     let h: Double
 }
 
+private struct BrowserRefineItemInput: Decodable {
+    let k: String
+    let o: String
+    let d: String
+}
+
 private struct BrowserRawRequest: Decodable {
     let v: Int?
     let type: String
@@ -110,6 +130,7 @@ private struct BrowserRawRequest: Decodable {
     let viewport: BrowserViewportInput?
     let regions: [BrowserImageRegionInput]?
     let engine: String?
+    let items: [BrowserRefineItemInput]?
 }
 
 enum BrowserRequest {
@@ -117,6 +138,8 @@ enum BrowserRequest {
     case cancel(id: String)
     case translate(id: String, target: AppLanguage, texts: [String], engine: String)
     case ocr(id: String, target: AppLanguage, image: Data, viewport: CGSize, regions: [BrowserImageRegionInput], engine: String)
+    /// 이미 화면에 그려진 Mac 기본 번역 초안을 다듬는 작은 후속 요청(앱 본체의 Chrome·Whale 전용).
+    case refine(id: String, target: AppLanguage, items: [BrowserRefineItem])
 
     static let maxTexts = 150
     static let maxTextLength = 5000
@@ -130,6 +153,10 @@ enum BrowserRequest {
     /// 웹 번역 엔진은 항목마다 차례로 처리하므로 한 요청을 작게 받는다.
     static let maxExternalTexts = 12
     static let maxExternalCharacters = 15_000
+    /// Apple Intelligence 후속 다듬기 요청(이미 그려진 결과만 소소하게 고침, 큰 묶음이 아니다).
+    static let maxRefineItems = 8
+    static let maxRefineItemCharacters = 700
+    static let maxRefineCharacters = 4000
 
     static func parse(_ data: Data) throws -> BrowserRequest {
         let raw: BrowserRawRequest
@@ -182,6 +209,23 @@ enum BrowserRequest {
             }
             return .ocr(id: id, target: target, image: bytes, viewport: CGSize(width: viewport.w, height: viewport.h), regions: regions,
                         engine: try validEngine(raw.engine))
+        case "refine":
+            let id = try validID(raw.id)
+            let target = try validTarget(raw.target)
+            guard let rawItems = raw.items, !rawItems.isEmpty, rawItems.count <= maxRefineItems else {
+                throw BrowserEngineError.badRequest("다듬기 항목 수")
+            }
+            var total = 0
+            var items: [BrowserRefineItem] = []
+            for item in rawItems {
+                guard validKey(item.k), item.o.count <= maxRefineItemCharacters, item.d.count <= maxRefineItemCharacters else {
+                    throw BrowserEngineError.badRequest("다듬기 항목")
+                }
+                total += item.o.count + item.d.count
+                items.append(BrowserRefineItem(key: item.k, original: item.o, draft: item.d))
+            }
+            guard total <= maxRefineCharacters else { throw BrowserEngineError.badRequest("다듬기 전체 길이") }
+            return .refine(id: id, target: target, items: items)
         default:
             throw BrowserEngineError.badRequest("종류")
         }
@@ -221,17 +265,24 @@ actor BrowserEngine {
     private static let maxOCRItems = 300
     /// 웹 번역 엔진으로 보내는 이미지 글자 상한(요청 하나). 넘는 조각은 번역하지 않는다.
     private static let maxExternalOCRItems = 24
+    /// recognizeAndTranslate 응답 하나에서 내보내는 글자 상자(g) 총 개수 상한(항목당 128개와 별도).
+    /// maxOCRItems(최대 300) × 항목당 최대 128개면 38,400개까지 가능해 메타데이터만으로 1MB 프레임 상한을
+    /// 넘길 수 있으므로, 전체 응답 크기를 데이터 기준으로 묶어 둔다.
+    private static let maxOutgoingGlyphBoxes = 8192
 
     private let translator: BrowserTextTranslating
     private let external: BrowserExternalTranslating?
+    /// Apple Intelligence 다듬기(앱 본체의 Chrome·Whale 엔진에서만 nil이 아니다. Safari는 항상 nil).
+    private let refiner: BrowserTextRefining?
     private let isEnabled: @Sendable () async -> Bool
     private var tasks: [String: Task<Data, Never>] = [:]
     private var supportedIDs: [String]?
 
     init(translator: BrowserTextTranslating, external: BrowserExternalTranslating? = nil,
-         isEnabled: @escaping @Sendable () async -> Bool) {
+         refiner: BrowserTextRefining? = nil, isEnabled: @escaping @Sendable () async -> Bool) {
         self.translator = translator
         self.external = external
+        self.refiner = refiner
         self.isEnabled = isEnabled
     }
 
@@ -250,6 +301,7 @@ actor BrowserEngine {
                 "type": "hello", "ok": true, "engine": Self.engineID, "engineTitle": Self.engineTitle,
                 "enabled": await isEnabled(),
                 "externalEngines": external?.engineIDs ?? [],
+                "aiRefine": refiner?.isAvailable ?? false,
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
             ]
             if let id { response["id"] = id }
@@ -257,7 +309,7 @@ actor BrowserEngine {
         case .cancel(let id):
             tasks["\(scope)|\(id)"]?.cancel()
             return Self.encode(["type": "ack", "ok": true, "id": id])
-        case .translate(let id, _, _, _), .ocr(let id, _, _, _, _, _):
+        case .translate(let id, _, _, _), .ocr(let id, _, _, _, _, _), .refine(let id, _, _):
             guard await isEnabled() else { return Self.encodeError(BrowserEngineError.disabled, id: id) }
             let key = "\(scope)|\(id)"
             tasks[key]?.cancel()
@@ -288,15 +340,20 @@ actor BrowserEngine {
                 let (results, missing, langs, warning) = try await translateTexts(texts, target: target, engine: engine)
                 var object: [String: Any] = ["type": "result", "ok": true, "id": id,
                             "texts": results.map { $0.map { $0 as Any } ?? NSNull() }, "missing": missing,
-                            "langs": langs.map { $0.map { $0 as Any } ?? NSNull() }]
+                            "langs": langs.map { $0.map { $0 as Any } ?? NSNull() }, "aiRefine": engine == BrowserRequest.localEngine && (refiner?.isAvailable ?? false)]
                 if let warning { object["warning"] = warning }
                 response = object
             case .ocr(_, let target, let image, let viewport, let regions, let engine):
                 let (images, missing, warning) = try await recognizeAndTranslate(image, viewport: viewport, regions: regions,
                                                                                  target: target, engine: engine)
-                var object: [String: Any] = ["type": "ocrResult", "ok": true, "id": id, "images": images, "missing": missing]
+                var object: [String: Any] = ["type": "ocrResult", "ok": true, "id": id, "images": images, "missing": missing,
+                            "aiRefine": engine == BrowserRequest.localEngine && (refiner?.isAvailable ?? false)]
                 if let warning { object["warning"] = warning }
                 response = object
+            case .refine(_, let target, let items):
+                let refined = await refineItems(items, target: target)
+                response = ["type": "refineResult", "ok": true, "id": id,
+                            "items": refined.map { ["k": $0.key, "t": $0.value] }]
             default:
                 throw BrowserEngineError.badRequest("종류")
             }
@@ -405,6 +462,13 @@ actor BrowserEngine {
         return ids.contains { LanguageDetection.isSameLanguage($0, key) }
     }
 
+    // MARK: 다듬기 후속 요청 (앱 본체의 Chrome·Whale 전용, Mac 기본 번역 결과만)
+
+    private func refineItems(_ items: [BrowserRefineItem], target: AppLanguage) async -> [String: String] {
+        guard let refiner, refiner.isAvailable, AppleTranslationRefiner.supportsTarget(target.rawValue) else { return [:] }
+        return await refiner.refine(items, targetLanguageName: target.displayNameKorean)
+    }
+
     // MARK: 이미지 영역 OCR
 
     /// 보이는 탭 캡처에서 확장이 지정한 이미지 영역만 잘라 OCR하고, 번역된 조각의 위치(영역 기준 0...1)와 번역문만 돌려준다.
@@ -428,7 +492,11 @@ actor BrowserEngine {
         let sy = Double(image.height) / Double(viewport.height)
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
 
-        struct Found { let imageKey: String; let box: CGRect; let text: String; let bg: String; let fg: String }
+        struct Found {
+            let imageKey: String; let box: CGRect; let text: String; let bg: String; let fg: String
+            /// box와 같은 요청 영역 기준 0...1 좌표로 변환한 원본 글자 상자(마스킹·글꼴 추정용)
+            let glyphBoxes: [CGRect]
+        }
         var found: [Found] = []
         var keys: [String] = []
         for region in regions {
@@ -438,16 +506,21 @@ actor BrowserEngine {
                 .integral.intersection(bounds)
             guard !crop.isNull, crop.width >= 24, crop.height >= 24, let cropped = image.cropping(to: crop) else { continue }
             let recognized = try await ImageTextRecognizer.recognize(cropped, assetID: region.k)
+            // 잘라낸 픽셀 좌표 → 뷰포트 CSS 좌표 → 요청 영역 기준 0...1. item.box와 글자 상자 모두 같은 변환을 쓴다.
+            func mapRect(_ r: CGRect) -> CGRect {
+                let px = (crop.minX + r.minX * crop.width) / sx
+                let py = (crop.minY + r.minY * crop.height) / sy
+                let pw = r.width * crop.width / sx
+                let ph = r.height * crop.height / sy
+                return CGRect(x: (px - region.x) / region.w, y: (py - region.y) / region.h,
+                             width: pw / region.w, height: ph / region.h)
+            }
             for item in recognized where item.hasMeaningfulLetters {
                 guard found.count < itemLimit else { break }
-                // 잘라낸 픽셀 좌표 → 뷰포트 CSS 좌표 → 요청 영역 기준 0...1
-                let px = (crop.minX + item.box.minX * crop.width) / sx
-                let py = (crop.minY + item.box.minY * crop.height) / sy
-                let pw = item.box.width * crop.width / sx
-                let ph = item.box.height * crop.height / sy
-                let box = CGRect(x: (px - region.x) / region.w, y: (py - region.y) / region.h,
-                                 width: pw / region.w, height: ph / region.h)
-                found.append(Found(imageKey: region.k, box: box, text: item.text, bg: item.backgroundHex, fg: item.foregroundHex))
+                let box = mapRect(item.box)
+                let glyphBoxes = item.glyphBoxes.map(mapRect)
+                found.append(Found(imageKey: region.k, box: box, text: item.text, bg: item.backgroundHex, fg: item.foregroundHex,
+                                    glyphBoxes: glyphBoxes))
             }
         }
 
@@ -460,13 +533,27 @@ actor BrowserEngine {
         }
         func rounded(_ value: CGFloat) -> Double { (Double(value) * 10_000).rounded() / 10_000 }
         var itemsByKey: [String: [[String: Any]]] = [:]
+        // 응답 전체(이 recognizeAndTranslate 호출 하나)에서 보내는 글자 상자(g) 총 개수 상한. 항목별 128개
+        // 상한(ImageTextRecognizer.maxGlyphsPerItem)은 그대로 둔 채, 번역에 성공해 실제로 내보내는 항목만 이
+        // 예산을 소모한다. 예산을 넘는 항목은 "g"만 생략한다(그 글자의 마스킹은 건너뛰고 원본 픽셀이 남는다).
+        // 넓은 배경 마스킹으로 대신하지 않는다. 전체 응답은 여전히 BrowserBridge.maxOutgoingFrame(1MB)로 보호된다.
+        var glyphBudget = Self.maxOutgoingGlyphBoxes
         for (item, text) in zip(found, translated) {
             guard let text, !text.isEmpty else { continue }
-            itemsByKey[item.imageKey, default: []].append([
+            var dict: [String: Any] = [
                 "x": rounded(item.box.minX), "y": rounded(item.box.minY),
                 "w": rounded(item.box.width), "h": rounded(item.box.height),
-                "t": text, "bg": item.bg, "fg": item.fg
-            ])
+                "t": text, "bg": item.bg, "fg": item.fg,
+                // 다듬기 후속 요청에만 쓰는 인식 원문(짧게 자름). Chrome·Whale에서 아이콘·화면 번역과 달리
+                // 이 원문을 저장하거나 기록하지 않고, 같은 패스의 후속 요청 한 번에만 메모리에서 쓴다.
+                "o": String(item.text.prefix(700))
+            ]
+            // 원본 글자 상자([x,y,w,h] 배열의 배열). 없으면("g" 생략) 확장이 그 조각의 배경을 마스킹하지 않는다.
+            if !item.glyphBoxes.isEmpty && item.glyphBoxes.count <= glyphBudget {
+                dict["g"] = item.glyphBoxes.map { [rounded($0.minX), rounded($0.minY), rounded($0.width), rounded($0.height)] }
+                glyphBudget -= item.glyphBoxes.count
+            }
+            itemsByKey[item.imageKey, default: []].append(dict)
         }
         // 번역 성공 여부와 무관하게(건너뛴 조각 포함) 이미지마다 인식한 언어 개수를 센다.
         var langCountsByKey: [String: [String: Int]] = [:]

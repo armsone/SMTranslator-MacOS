@@ -19,10 +19,11 @@ const SAFARI_APP_ID = "com.local.screentranslator";
 const TARGETS = ["ko", "en", "ja", "zh-Hans", "zh-Hant"];
 const ALL_URLS = "<all_urls>";
 const TAB_MESSAGE_TIMEOUT = 5000;
-const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16 };
+const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16, glyphsPerItem: 128, glyphsTotal: 8192,
+                 refineItems: 8, refineItemChars: 700, refineChars: 4000 };
 // 웹 번역 엔진은 SMT가 항목마다 차례로 공식 페이지에 넣으므로 요청을 작게 하고 오래 기다린다(페이지 확인을 사용자가 할 시간 포함).
 const EXTERNAL_LIMITS = { texts: 12, chars: 15000 };
-const TIMEOUT = { hello: 15000, text: 60000, ocr: 90000, external: 600000 };
+const TIMEOUT = { hello: 15000, text: 60000, ocr: 90000, external: 600000, refine: 20000 };
 const LOCAL_ENGINE = "apple";
 const EXTERNAL_ENGINES = IS_SAFARI ? [] : ["deepl", "google", "papago"];
 const CAPTURE_MIN_INTERVAL = 700; // Chrome captureVisibleTab 호출 빈도 제한(초당 2회) 아래로 유지
@@ -258,7 +259,8 @@ const native = {
       // 구버전 SMT나 Safari 확장 앱은 웹 번역 엔진을 알리지 않는다.
       externalEngines: Array.isArray(response.externalEngines)
         ? response.externalEngines.filter((engine) => EXTERNAL_ENGINES.includes(engine))
-        : []
+        : [],
+      aiRefine: response.aiRefine === true
     };
   }
 };
@@ -330,6 +332,19 @@ function sanitizeWarning(warning) {
   return typeof warning === "string" ? warning.slice(0, 300) : "";
 }
 
+/** Apple Intelligence 다듬기 후속 요청 항목: 키 형식·개수·길이만 확인한다(내용은 이미 화면에 그려진 값). */
+function validRefineItems(items) {
+  if (!Array.isArray(items) || items.length === 0 || items.length > LIMITS.refineItems) return false;
+  let total = 0;
+  for (const item of items) {
+    if (!item || typeof item.k !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(item.k)) return false;
+    if (typeof item.o !== "string" || typeof item.d !== "string") return false;
+    if (item.o.length > LIMITS.refineItemChars || item.d.length > LIMITS.refineItemChars) return false;
+    total += item.o.length + item.d.length;
+  }
+  return total <= LIMITS.refineChars;
+}
+
 function validRegions(regions) {
   return Array.isArray(regions) && regions.length > 0 && regions.length <= LIMITS.regions && regions.every((r) =>
     r && typeof r.k === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(r.k) &&
@@ -360,19 +375,55 @@ function sanitizeLangCounts(langs) {
   return result;
 }
 
+// 정규화 좌표(0~1)의 반올림 오차만 허용하고 그 밖의 값은 잘라낸다(이미지 밖까지 칠하는 것을 막는다).
+const GLYPH_COORD_TOLERANCE = 0.01;
+
+function clampGlyphCoord(n) {
+  if (n < 0) return n >= -GLYPH_COORD_TOLERANCE ? 0 : null;
+  if (n > 1) return n <= 1 + GLYPH_COORD_TOLERANCE ? 1 : null;
+  return n;
+}
+
+/** 네이티브가 보낸 글자 상자(g)들: [x,y,w,h] 정규화 좌표 4개, w/h는 양수인 항목만 통과시키고
+ *  이미지당·응답 전체 개수 상한을 넘으면 자른다. 형식이 틀리거나 비어 있으면 빈 배열을 돌려주고
+ *  (마스킹 생략으로 이어짐) 문단 전체를 가리는 등의 값을 지어내지 않는다. */
+function sanitizeGlyphs(g, remainingBudget) {
+  if (!Array.isArray(g) || remainingBudget <= 0) return [];
+  const result = [];
+  for (const entry of g) {
+    if (result.length >= LIMITS.glyphsPerItem || result.length >= remainingBudget) break;
+    if (!Array.isArray(entry) || entry.length !== 4 || !entry.every((n) => Number.isFinite(n))) continue;
+    const x = clampGlyphCoord(entry[0]);
+    const y = clampGlyphCoord(entry[1]);
+    const w = clampGlyphCoord(entry[2]);
+    const h = clampGlyphCoord(entry[3]);
+    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) continue;
+    result.push([x, y, w, h]);
+  }
+  return result;
+}
+
 function sanitizeImages(images) {
   if (!Array.isArray(images)) return [];
   const hex = /^#[0-9A-Fa-f]{6}$/;
+  let glyphBudget = LIMITS.glyphsTotal;
   return images.slice(0, LIMITS.regions).map((image) => ({
     k: typeof image?.k === "string" ? image.k : "",
     items: (Array.isArray(image?.items) ? image.items : []).filter((item) =>
       item && typeof item.t === "string" && item.t.length <= LIMITS.textLength &&
       ["x", "y", "w", "h"].every((key) => Number.isFinite(item[key]) && item[key] >= -0.5 && item[key] <= 1.5)
-    ).map((item) => ({
-      x: item.x, y: item.y, w: item.w, h: item.h, t: item.t,
-      bg: hex.test(item.bg) ? item.bg : "#FFFFFF",
-      fg: hex.test(item.fg) ? item.fg : "#000000"
-    })),
+    ).map((item) => {
+      const g = sanitizeGlyphs(item.g, glyphBudget);
+      glyphBudget -= g.length;
+      return {
+        x: item.x, y: item.y, w: item.w, h: item.h, t: item.t,
+        bg: hex.test(item.bg) ? item.bg : "#FFFFFF",
+        fg: hex.test(item.fg) ? item.fg : "#000000",
+        // 다듬기 후속 요청에만 쓰는 인식 원문(짧게 자름). 저장하지 않고 이번 패스에서만 메모리에서 쓴다.
+        ...(typeof item.o === "string" ? { o: item.o.slice(0, 700) } : {}),
+        ...(g.length ? { g } : {})
+      };
+    }),
     langs: sanitizeLangCounts(image?.langs)
   }));
 }
@@ -404,7 +455,8 @@ async function handleContent(message, sender) {
         : null;
       if (!texts) throw codedError("bad_response", "SMT 응답 형식이 올바르지 않습니다.");
       return { ok: true, texts, missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [],
-               langs: sanitizeLangs(response.langs, texts.length), warning: sanitizeWarning(response.warning) };
+               langs: sanitizeLangs(response.langs, texts.length), warning: sanitizeWarning(response.warning),
+               aiRefine: response.aiRefine === true };
     }
     case "capture": {
       if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
@@ -432,11 +484,27 @@ async function handleContent(message, sender) {
       if (epoch !== control.epoch) throw codedError("cancelled", "");
       return { ok: true, images: sanitizeImages(response.images),
                missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [],
-               warning: sanitizeWarning(response.warning) };
+               warning: sanitizeWarning(response.warning), aiRefine: response.aiRefine === true };
+    }
+    case "refine": {
+      if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
+      const engine = requestEngine(message, settings);
+      if (engine !== LOCAL_ENGINE) throw codedError("bad_request", "다듬기는 Mac 기본 번역에서만 지원합니다.");
+      if (!TARGETS.includes(message.target) || !validRefineItems(message.items)) {
+        throw codedError("bad_request", "잘못된 다듬기 요청입니다.");
+      }
+      const response = await native.request(
+        { v: 1, type: "refine", id: native.nextId("r"), target: message.target, items: message.items, engine },
+        { timeout: TIMEOUT.refine, tabId: tab.id, kind: "refine" });
+      if (epoch !== control.epoch) throw codedError("cancelled", "");
+      const items = Array.isArray(response.items)
+        ? response.items.filter((it) => it && typeof it.k === "string" && typeof it.t === "string" && it.t.length <= LIMITS.textLength)
+        : [];
+      return { ok: true, items };
     }
     case "cancel": {
       captures.delete(tab.id);
-      native.cancelTab(tab.id, message.kind === "ocr" || message.kind === "text" ? message.kind : null);
+      native.cancelTab(tab.id, message.kind === "ocr" || message.kind === "text" || message.kind === "refine" ? message.kind : null);
       return { ok: true };
     }
     default:

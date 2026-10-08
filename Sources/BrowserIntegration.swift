@@ -142,7 +142,10 @@ final class BrowserIntegration: ObservableObject {
             }
             let key = Self.enabledKey
             // 확장에서 웹 번역 엔진을 고른 요청만 앱의 웹 번역 실행기로 넘긴다(앱 쪽 제공사별 동의 필요).
+            // Apple Intelligence 다듬기는 이 앱 본체 엔진(Chrome·Whale)에서만 연결한다. Safari 확장은 앱 설정을
+            // 읽을 수 없어 별도 엔진 인스턴스(refiner 없음)를 쓰며, 여기서 손대지 않는다.
             let engine = BrowserEngine(translator: translator, external: WebTranslatorBrowserBridge(),
+                                       refiner: AppleBrowserRefiner(),
                                        isEnabled: { UserDefaults.standard.bool(forKey: key) })
             server = BrowserBridgeServer(engine: engine)
         }

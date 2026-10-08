@@ -60,6 +60,7 @@ xcrun swiftc \
   -framework UniformTypeIdentifiers \
   -framework ApplicationServices \
   -framework SafariServices \
+  -Xlinker -weak_framework -Xlinker FoundationModels \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" \
   "$ROOT_DIR"/Sources/*.swift
@@ -122,6 +123,7 @@ xcrun swiftc \
   -framework Translation \
   -framework Vision \
   -framework NaturalLanguage \
+  -Xlinker -weak_framework -Xlinker FoundationModels \
   -Xlinker -e -Xlinker _NSExtensionMain \
   -o "$SAFARI_APPEX/Contents/MacOS/SMTSafariExtension" \
   "$ROOT_DIR/SafariExtension/SafariWebExtensionHandler.swift" \
@@ -129,7 +131,8 @@ xcrun swiftc \
   "$ROOT_DIR/Sources/BrowserProtocol.swift" \
   "$ROOT_DIR/Sources/Models.swift" \
   "$ROOT_DIR/Sources/ImageTextRecognizer.swift" \
-  "$ROOT_DIR/Sources/DocumentTextRecognizer.swift"
+  "$ROOT_DIR/Sources/DocumentTextRecognizer.swift" \
+  "$ROOT_DIR/Sources/AppleTranslationRefiner.swift"
 cp "$ROOT_DIR/SafariExtension/Info.plist" "$SAFARI_APPEX/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$SAFARI_APPEX/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD" "$SAFARI_APPEX/Contents/Info.plist"

@@ -118,6 +118,10 @@ final class AppViewModel: ObservableObject {
     private var externalServiceRetryCount = 0
     private var externalStatusTimer: Timer?
 
+    /// Apple Intelligence 다듬기(설정 켜짐 + 기기 내 모델 가능 시에만, Mac 기본 번역 결과만). 모아서 작은 묶음으로 보낸다.
+    private var refinePendingItems: [AppleTranslationRefiner.Item] = []
+    private var refineTasks: [Task<Void, Never>] = []
+
     /// 메일 번역과 공용인 번역 방식
     var backend: TranslationBackend { TranslationBackendStore.shared.backend }
 
@@ -230,6 +234,9 @@ final class AppViewModel: ObservableObject {
         externalStatusTimer?.invalidate()
         externalStatusTimer = nil
         pendingJob = nil
+        refineTasks.forEach { $0.cancel() }
+        refineTasks.removeAll()
+        refinePendingItems.removeAll()
         // groupQueue·groupErrorMessage·isProcessing·그 밖의 @Published 변경은 SwiftUI 재레이아웃을
         // 일으켜 끌기를 멈칫하게 하므로 다음 명시적 동작이 finishRegionChange()를 부를 때까지 미룬다.
         isRegionCleanupPending = true
@@ -289,6 +296,9 @@ final class AppViewModel: ObservableObject {
         isProcessing = false
         hasCompleteResult = false
         primaryAction = .captureAndTranslate
+        refineTasks.forEach { $0.cancel() }
+        refineTasks.removeAll()
+        refinePendingItems.removeAll()
         if let message {
             if currentLines.isEmpty {
                 status = .info(message)
@@ -299,6 +309,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func clearResult() {
+        refineTasks.forEach { $0.cancel() }
+        refineTasks.removeAll()
+        refinePendingItems.removeAll()
         capturedImage = nil
         currentLines = [:]
         lineBackgroundColors = [:]
@@ -647,6 +660,68 @@ final class AppViewModel: ObservableObject {
               !receivedLineIDs.contains(lineID) else { return }
         appendPatch(TranslatedPatch(id: lineID, translatedText: response.targetText, boundingBox: line.boundingBox, autoBackgroundColor: lineBackgroundColors[lineID]))
         status = .translating(done: receivedLineIDs.count, total: currentLines.count, skipped: skippedLineIDs.count)
+        noteTranslatedForRefine(id: lineID, original: line.text, draft: response.targetText, generation: generation)
+    }
+
+    // MARK: - Apple Intelligence 다듬기 (설정 켜짐 + 기기 내 모델 가능 시에만, Mac 기본 번역 결과만)
+
+    /// 실제로 Apple 번역을 거친 줄만 모아 작은 묶음이 차면 보낸다(언어 조합이 같아 번역을 거치지 않은 줄,
+    /// 외부 AI·웹 번역기 결과는 모으지 않는다).
+    private func noteTranslatedForRefine(id: Int, original: String, draft: String, generation: Int) {
+        guard !backend.isExternal, AppleTranslationRefiner.isEnabled,
+              AppleTranslationRefiner.supportsTarget(targetLanguage.rawValue) else { return }
+        refinePendingItems.append(AppleTranslationRefiner.Item(key: String(id), original: original, draft: draft))
+        if refinePendingItems.count >= AppleTranslationRefiner.maxItemsPerBatch {
+            flushRefineBuffer(generation: generation)
+        }
+    }
+
+    private func flushRefineBuffer(generation: Int) {
+        guard !refinePendingItems.isEmpty else { return }
+        let items = refinePendingItems
+        refinePendingItems = []
+        guard let firstID = Int(items[0].key) else { return }
+        let (nearbyOriginal, nearbyDraft) = nearbyRefineContext(aroundLineID: firstID)
+        let targetName = AppModel.languageName(targetLanguage.rawValue)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let result = await AppleTranslationRefiner.refine(
+                items: items, nearbyOriginal: nearbyOriginal, nearbyDraft: nearbyDraft,
+                targetLanguageName: targetName, isCurrent: { [weak self] in self?.isJobCurrent(generation) ?? false })
+            guard self.isJobCurrent(generation), AppleTranslationRefiner.isEnabled, !result.isEmpty else { return }
+            for (key, text) in result {
+                guard let lineID = Int(key), self.currentLines[lineID] != nil, self.receivedLineIDs.contains(lineID) else { continue }
+                if let index = self.translatedPatches.firstIndex(where: { $0.id == lineID }) {
+                    let old = self.translatedPatches[index]
+                    self.translatedPatches[index] = TranslatedPatch(id: old.id, translatedText: text, boundingBox: old.boundingBox,
+                                                                     autoBackgroundColor: old.autoBackgroundColor)
+                }
+                self.overlay?.updateTranslationPatchText(id: lineID, text: text)
+            }
+        }
+        refineTasks.append(task)
+    }
+
+    /// 다듬을 줄 바로 앞뒤(줄 ID 순서) 몇 줄의 원문·현재 번역문만 짧게 넘긴다(전체 화면을 넘기지 않음).
+    private func nearbyRefineContext(aroundLineID lineID: Int) -> ([String], [String]) {
+        let sortedIDs = currentLines.keys.sorted()
+        guard let index = sortedIDs.firstIndex(of: lineID) else { return ([], []) }
+        var originals: [String] = []
+        var drafts: [String] = []
+        let radius = AppleTranslationRefiner.maxNearbyLines
+        var offset = 1
+        while originals.count < radius && (index - offset >= 0 || index + offset < sortedIDs.count) {
+            for neighborIndex in [index - offset, index + offset] {
+                guard originals.count < radius, sortedIDs.indices.contains(neighborIndex) else { continue }
+                let neighborID = sortedIDs[neighborIndex]
+                guard let line = currentLines[neighborID],
+                      let patch = translatedPatches.first(where: { $0.id == neighborID }) else { continue }
+                originals.append(line.text)
+                drafts.append(patch.translatedText)
+            }
+            offset += 1
+        }
+        return (originals, drafts)
     }
 
     /// 묶음(언어별 작업 또는 직접 고른 언어 하나뿐인 작업) 하나의 스트림이 끝났을 때 호출된다
@@ -657,6 +732,7 @@ final class AppViewModel: ObservableObject {
         if let error, groupErrorMessage == nil {
             groupErrorMessage = error.localizedDescription
         }
+        flushRefineBuffer(generation: generation)
         advanceGroupQueue(generation: generation)
     }
 

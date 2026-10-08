@@ -27,6 +27,8 @@
   const CACHE_LIMIT = 4000;
   const RECORD_LIMIT = 30000;
   const MAX_IMAGES = 8;
+  // Apple Intelligence 다듬기(기기 내, Mac 기본 번역 결과만): 이미 그려진 결과 뒤에 작은 후속 요청 하나만 보낸다.
+  const MAX_REFINE_ITEMS = 8;
   const LETTER = /\p{L}/u;
   const SKIP_SELECTOR = [
     "script", "style", "noscript", "template", "textarea", "input", "select", "option", "code", "pre", "kbd",
@@ -50,7 +52,9 @@
     timer: 0,
     status: "대기",
     error: "",
-    warning: ""
+    warning: "",
+    // SMT 엔진이 최근 응답에서 알려준, 지금 이 다듬기를 보낼 수 있는지(설정 켜짐 + 기기 내 모델 가능 + Mac 기본 번역).
+    aiRefine: false
   };
 
   /** Text 노드 → { original, translated(null이면 원문 유지), target(엔진|언어), lang(판별 언어 코드|"unknown"|null(글자없음)|생략(구버전 응답)) } */
@@ -62,18 +66,69 @@
   /** img 요소 → { key, box, offX, offY, w, h, elemW, elemH, langs({언어코드|"unknown": 개수}) } */
   const imageRecords = new Map();
   let ocrInFlight = false;
+  // 확장 컨텍스트가 무효화된(업데이트·재설치로 이전 페이지의 content script가 끊어진) 뒤 한 번만 정지한다.
+  let contextDead = false;
 
   // MARK: 공통
 
+  function isContextInvalidError(error) {
+    const message = (error && error.message) || String(error || "");
+    return message.includes("Extension context invalidated") || message.includes("context invalidated");
+  }
+
+  /** 컨텍스트 무효화 뒤 한 번만: 자동/재실행 끄기, 세대 올려 응답 무효화, 타이머·감시·리스너 정리,
+   *  자기 번역 DOM만(지금 값이 정확히 자기 번역문일 때만) 원문으로 복원, 자기 덮개·맵 비우기. 페이지 자체·내비게이션은 그대로 둔다. */
+  function retire() {
+    if (contextDead) return;
+    contextDead = true;
+    state.auto = false;
+    state.rerun = false;
+    state.rerunManual = false;
+    state.running = false;
+    state.pageGen += 1;
+    state.scrollGen += 1;
+    clearTimeout(state.timer);
+    state.timer = 0;
+    ocrInFlight = false;
+    setObserving(false);
+    removeEventListener("scroll", onScroll, { capture: true });
+    removeEventListener("resize", onScroll);
+    document.removeEventListener("fullscreenchange", onFullscreenChange);
+    document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
+    removeEventListener("popstate", onHistoryChange);
+    removeEventListener("hashchange", onHistoryChange);
+    for (const [node, record] of records) {
+      if (!node.isConnected) continue;
+      if (record.translated !== null && node.nodeValue === record.translated) node.nodeValue = record.original;
+    }
+    clearImageOverlays();
+    records.clear();
+    cache.clear();
+    langCache.clear();
+  }
+
   function send(message) {
-    return Promise.resolve(api.runtime.sendMessage(message)).then((response) => {
-      if (!response || response.ok !== true) {
-        const error = new Error(response?.message || "");
-        error.code = response?.code || "error";
+    if (contextDead) {
+      const error = new Error("확장 기능 연결이 끊어졌습니다.");
+      error.code = "contextinvalid";
+      return Promise.reject(error);
+    }
+    // sendMessage 호출을 Promise 실행자 안에서 해야, 컨텍스트 무효화로 동기적으로 던지는 예외도
+    // 거부(rejection)로 바뀌어 호출부의 .catch가 받을 수 있다(실행자 밖에서 호출하면 동기 예외가 그대로 샌다).
+    return new Promise((resolve) => resolve(api.runtime.sendMessage(message)))
+      .then((response) => {
+        if (!response || response.ok !== true) {
+          const error = new Error(response?.message || "");
+          error.code = response?.code || "error";
+          throw error;
+        }
+        return response;
+      })
+      .catch((error) => {
+        if (!contextDead && isContextInvalidError(error)) retire();
+        if (contextDead) error.code = "contextinvalid";
         throw error;
-      }
-      return response;
-    });
+      });
   }
 
   function setStatus(text) {
@@ -155,9 +210,16 @@
     const style = document.createElement("style");
     style.textContent =
       ".img{position:absolute;pointer-events:none;overflow:hidden}" +
+      ".mask{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}" +
       ".t{position:absolute;box-sizing:border-box;overflow:hidden;pointer-events:none;user-select:none;" +
+      "display:flex;align-items:center;justify-content:center;text-align:center;background:transparent;" +
       "font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.15;white-space:normal;" +
-      "word-break:keep-all;overflow-wrap:anywhere;padding:0 1px;border-radius:2px}";
+      "word-break:keep-all;overflow-wrap:anywhere;padding:0 1px}" +
+      // .tt(안쪽 글자 상자)는 flex-shrink:0으로 바깥 flex가 줄여 넘침을 감추지 못하게 하고, overflow는 기본
+      // visible로 둬 scrollWidth/scrollHeight가 바깥 .t(overflow:hidden, 가운데 정렬)의 뒤틀린 값 대신 글자
+      // 자신의 실제 필요한 크기를 그대로 보여주게 한다(가운데 정렬된 내용은 앞쪽으로 넘친 만큼이 scrollWidth에
+      // 반영되지 않을 수 있는 브라우저 동작을 피한다). 치수(width/height)는 fitFontSize가 측정 전에 직접 both 넣는다.
+      ".tt{display:inline-block;flex-shrink:0;max-width:none;max-height:none}";
     layerRoot.appendChild(style);
     parent.appendChild(layerHost);
     applyLayerVisibility();
@@ -259,6 +321,8 @@
     const engine = state.engine;
     const maxTexts = isExternal() ? EXTERNAL_BATCH_TEXTS : BATCH_TEXTS;
     const maxChars = isExternal() ? EXTERNAL_BATCH_CHARS : BATCH_CHARS;
+    // 다듬기 후속 요청 후보(이 패스에서 실제로 Mac 기본 번역을 거친 줄만, 작은 개수로 제한).
+    const refineCandidates = [];
     let start = 0;
     while (start < texts.length) {
       const batch = [];
@@ -274,14 +338,51 @@
       if (!stillCurrent(pageGen) || target !== state.target || engine !== state.engine) return;
       if (response.missing.length) state.warning = `언어 팩 필요: ${response.missing.join(", ")}`;
       if (response.warning) state.warning = response.warning;
+      if (typeof response.aiRefine === "boolean") state.aiRefine = response.aiRefine;
       // langs는 입력과 같은 개수일 때만 쓴다(구버전 네이티브 앱이면 없음 → 언어 통계는 집계하지 않는다).
       const langs = Array.isArray(response.langs) && response.langs.length === batch.length ? response.langs : null;
       response.texts.forEach((value, index) => {
         cachePut(batch[index], value);
         const lang = langs ? langs[index] : undefined;
         if (langs) langPut(batch[index], lang);
-        for (const unit of groups.get(batch[index]) || []) applyUnit(unit, value, lang);
+        const unitsForText = groups.get(batch[index]) || [];
+        for (const unit of unitsForText) applyUnit(unit, value, lang);
+        if (typeof value === "string" && value && refineCandidates.length < MAX_REFINE_ITEMS && unitsForText[0]) {
+          refineCandidates.push({ node: unitsForText[0].node, original: unitsForText[0].source, draft: value });
+        }
       });
+    }
+    if (!isExternal() && state.aiRefine && refineCandidates.length) {
+      refineTextCandidates(refineCandidates, pageGen).catch(() => {});
+    }
+  }
+
+  /** 이미 그려진 DOM 텍스트 번역 중 일부만 다듬어 같은 노드 값만 바꾼다(새 번역으로 세지 않음).
+   *  실패·거부·취소는 조용히 무시하고 기존 번역을 그대로 둔다. */
+  async function refineTextCandidates(candidates, pageGen) {
+    const items = candidates.map((c, index) => ({ k: `r${index}`, o: c.original, d: c.draft }));
+    let response;
+    try {
+      response = await send({ cmd: "refine", target: state.target, engine: state.engine, items });
+    } catch {
+      return;
+    }
+    if (!stillCurrent(pageGen) || isExternal()) return;
+    for (const item of response.items || []) {
+      const index = Number(String(item.k).slice(1));
+      const candidate = candidates[index];
+      if (!candidate || `r${index}` !== item.k || !candidate.node.isConnected) continue;
+      const record = records.get(candidate.node);
+      if (!record || record.target !== profile() || record.original !== candidate.original) continue;
+      const lead = candidate.original.match(/^\s*/)[0];
+      const trail = candidate.original.match(/\s*$/)[0];
+      const expectedCurrent = lead + candidate.draft + trail;
+      if (record.translated !== expectedCurrent) continue; // 그사이 다시 번역되었거나 바뀜
+      const refinedTrimmed = item.t.trim();
+      if (!refinedTrimmed) continue;
+      const refined = lead + refinedTrimmed + trail;
+      record.translated = refined;
+      if (state.view === "translated" && candidate.node.nodeValue === expectedCurrent) candidate.node.nodeValue = refined;
     }
   }
 
@@ -347,7 +448,40 @@
     return list.sort((a, b) => b.area - a.area).slice(0, MAX_IMAGES);
   }
 
-  function renderImage(candidate, items, langs) {
+  // 세로쓰기 대상에 한글(완성형 음절 AC00-D7A3, 자모 1100-11FF/3130-318F)도 포함한다. 한자·가나만 보던
+  // 기존 범위로는 한국어 번역문이 세로로 좁고 긴 상자에 들어가도 가로쓰기로만 그려졌다.
+  const LETTER_CJK = /[ᄀ-ᇿ㄰-㆏가-힣぀-ヿ㐀-䶿一-鿿豈-﫿]/;
+
+  // 실제 배치된 상자 크기에 맞춰 이진 탐색으로 가장 큰 글꼴을 찾는다(반복 횟수 고정으로 유한 종료).
+  // div(.t)는 overflow:hidden에 가운데 정렬된 flex 부모라 자신의 scrollWidth/scrollHeight만으로는 양쪽으로
+  // 고르게 넘친 내용을 제대로 못 잡을 수 있다(가운데 정렬 넘침은 시작 쪽이 scrollWidth에 반영되지 않는 엔진이
+  // 있다). 대신 안쪽 text(.tt, overflow:visible, flex-shrink:0)의 자기 크기를 바깥 div의 가용 치수와 직접
+  // 비교한다. inline-size(글이 흐르는 가로 축)는 writing-mode에서 가로쓰기면 physical width, 세로쓰기면
+  // physical height로 매핑되므로, 그 쪽만 가용 치수로 고정해 줄바꿈(가로 줄 또는 세로 칸)이 일어나게 하고
+  // 반대 축은 auto로 열어 둬 넘침이 그 축의 scroll 치수로 그대로 드러나게 한다.
+  function fitFontSize(div, text, minFont, preferredMax, vertical) {
+    if (vertical) {
+      text.style.height = `${div.clientHeight}px`;
+      text.style.width = "auto";
+    } else {
+      text.style.width = `${div.clientWidth}px`;
+      text.style.height = "auto";
+    }
+    const fits = () => text.scrollWidth <= div.clientWidth + 1 && text.scrollHeight <= div.clientHeight + 1;
+    let lo = minFont;
+    let hi = preferredMax;
+    div.style.fontSize = `${hi}px`;
+    if (!fits()) {
+      for (let iter = 0; iter < 7; iter += 1) {
+        const mid = (lo + hi) / 2;
+        div.style.fontSize = `${mid}px`;
+        if (fits()) lo = mid; else hi = mid;
+      }
+      div.style.fontSize = `${Math.max(minFont, Math.floor(lo))}px`;
+    }
+  }
+
+  function renderImage(candidate, items, langs, refineCandidates) {
     const { img, rect, clip } = candidate;
     const previous = imageRecords.get(img);
     if (previous) previous.box.remove();
@@ -359,30 +493,129 @@
     box.style.width = `${clip.w}px`;
     box.style.height = `${clip.h}px`;
     root.appendChild(box);
-    for (const item of items) {
+
+    const MIN_FONT = 8;
+    const MAX_FONT = 39;
+
+    // 원본 글자를 가리는 배경은 보고된 글자 상자(item.g)에만, 이미지 하나당 캔버스 하나에 평면색으로 그린다.
+    // 문단 전체 사각형이나 말풍선 테두리·그림까지 덮는 넓은 영역은 절대 칠하지 않는다. g가 없는 조각은
+    // 마스킹을 건너뛴다(그 글자의 원본 픽셀은 그대로 남는다).
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.className = "mask";
+    maskCanvas.width = Math.max(1, Math.round(clip.w));
+    maskCanvas.height = Math.max(1, Math.round(clip.h));
+    box.appendChild(maskCanvas);
+    const maskCtx = maskCanvas.getContext("2d");
+    if (maskCtx) {
+      for (const item of items) {
+        if (!Array.isArray(item.g) || !item.g.length) continue;
+        maskCtx.fillStyle = item.bg;
+        for (const g of item.g) {
+          maskCtx.fillRect(g[0] * clip.w, g[1] * clip.h, g[2] * clip.w, g[3] * clip.h);
+        }
+      }
+    }
+
+    // 원본 글자 크기 추정(0.5.5 기준 짧은 쪽 * 0.88에서 0.6.2에서 10% 추가 확대: * 0.968).
+    // item.g(글자 상자)는 마스킹 전용이며 이 추정에는 쓰지 않는다.
+    const geoms = items.map((item) => {
+      const w = item.w * clip.w, h = item.h * clip.h;
+      const vertical = w > 0 && h / w > 1.6 && LETTER_CJK.test(item.t);
+      return { w, h, vertical, estimate: Math.min(w, h) * 0.968, cx: (item.x + item.w / 2) * clip.w, top: item.y * clip.h, bottom: (item.y + item.h) * clip.h };
+    });
+
+    // 같은 말풍선의 인접한 세로쓰기 칸들은 서로 다른 글자 수/모양으로 geometry 추정이 들쭉날쭉해질 수 있다.
+    // 가까이 붙어 있고(가로 간격이 자기 너비 이하) 세로로 많이 겹치는(70% 이상) 세로쓰기 칸끼리만, 그
+    // 좁은 무리 안에서 추정치를 중앙값으로 맞춰 칸 사이 글자 크기 튐을 줄인다. 말풍선이 다르거나 세로쓰기가
+    // 아니거나 겹침이 적은 칸은 건드리지 않는다(과도한 전역 폰트 통일 금지).
+    const groupOf = geoms.map((_, i) => i);
+    const find = (i) => { while (groupOf[i] !== i) i = groupOf[i]; return i; };
+    for (let i = 0; i < geoms.length; i += 1) {
+      if (!geoms[i].vertical) continue;
+      for (let j = i + 1; j < geoms.length; j += 1) {
+        if (!geoms[j].vertical) continue;
+        const a = geoms[i], b = geoms[j];
+        const gap = Math.abs(a.cx - b.cx);
+        const closeEnough = gap <= Math.max(a.w, b.w) * 1.5;
+        const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        const minSpan = Math.min(a.bottom - a.top, b.bottom - b.top);
+        const overlapsEnough = minSpan > 0 && overlap / minSpan >= 0.7;
+        if (closeEnough && overlapsEnough) {
+          const ra = find(i), rb = find(j);
+          if (ra !== rb) groupOf[rb] = ra;
+        }
+      }
+    }
+    const byRoot = new Map();
+    geoms.forEach((_, i) => {
+      const r = find(i);
+      if (!byRoot.has(r)) byRoot.set(r, []);
+      byRoot.get(r).push(i);
+    });
+    byRoot.forEach((idxs) => {
+      if (idxs.length < 2) return;
+      const sorted = idxs.map((i) => geoms[i].estimate).sort((x, y) => x - y);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      idxs.forEach((i) => { geoms[i].estimate = median; });
+    });
+
+    // 번역 글자는 투명 배경으로, 원본 OCR 테두리 안에 그대로 두고 중앙에 맞춘다(가로 확장 없음).
+    items.forEach((item, i) => {
       const div = document.createElement("div");
       div.className = "t";
       div.style.left = `${item.x * 100}%`;
       div.style.top = `${item.y * 100}%`;
       div.style.width = `${item.w * 100}%`;
       div.style.height = `${item.h * 100}%`;
-      div.style.background = item.bg;
       div.style.color = item.fg;
-      let size = Math.max(9, Math.min(36, item.h * clip.h * 0.78));
-      div.style.fontSize = `${size}px`;
-      div.textContent = item.t;
-      box.appendChild(div);
-      for (let i = 0; i < 6 && (div.scrollHeight > div.clientHeight + 1 || div.scrollWidth > div.clientWidth + 1) && size > 8; i += 1) {
-        size *= 0.85;
-        div.style.fontSize = `${size}px`;
+
+      const { vertical, estimate } = geoms[i];
+      if (vertical) {
+        div.style.writingMode = "vertical-rl";
+        div.style.textOrientation = "upright";
       }
-    }
+      // 글자는 안쪽 .tt에 넣는다: 이 요소의 scrollWidth/scrollHeight로 넘침을 재야 바깥 .t(가운데 정렬,
+      // overflow:hidden)의 뒤틀린 scrollWidth/scrollHeight 대신 실제 필요한 크기를 알 수 있다(fitFontSize 참고).
+      const text = document.createElement("span");
+      text.className = "tt";
+      text.textContent = item.t;
+      div.appendChild(text);
+      box.appendChild(div);
+      if (refineCandidates && typeof item.o === "string" && item.o && refineCandidates.length < MAX_REFINE_ITEMS) {
+        refineCandidates.push({ el: text, original: item.o, draft: item.t });
+      }
+
+      const preferredMax = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(estimate)));
+      fitFontSize(div, text, MIN_FONT, preferredMax, vertical);
+    });
+
     imageRecords.set(img, {
       key: imageKey(img), box,
       offX: clip.x - rect.left, offY: clip.y - rect.top, w: clip.w, h: clip.h,
       elemW: rect.width, elemH: rect.height,
       langs: langs && typeof langs === "object" ? langs : undefined // 구버전 응답이면 생략: 미판별로 둔갑시키지 않는다
     });
+  }
+
+  /** 이미지 위 OCR 번역 글자 중 일부만 다듬어 같은 칸의 텍스트만 바꾼다(글꼴·위치·마스킹은 그대로).
+   *  실패·거부·취소는 조용히 무시하고 기존 번역 글자를 그대로 둔다. */
+  async function refineImageCandidates(candidates, pageGen, scrollGen) {
+    const items = candidates.map((c, index) => ({ k: `i${index}`, o: c.original, d: c.draft }));
+    let response;
+    try {
+      response = await send({ cmd: "refine", target: state.target, engine: state.engine, items });
+    } catch {
+      return;
+    }
+    if (!stillCurrent(pageGen) || state.scrollGen !== scrollGen || isExternal()) return;
+    for (const item of response.items || []) {
+      const index = Number(String(item.k).slice(1));
+      const candidate = candidates[index];
+      if (!candidate || `i${index}` !== item.k || !candidate.el.isConnected) continue;
+      if (candidate.el.textContent !== candidate.draft) continue; // 그사이 다시 그려졌으면 건드리지 않는다
+      const refined = item.t.trim();
+      if (refined) candidate.el.textContent = refined;
+    }
   }
 
   // 뷰포트와 겹치는 넓이(px^2). 화면 밖이거나 가려진 부분은 0이 되어, 보이지 않는 광고 등에 걸린 애니메이션을
@@ -477,6 +710,8 @@
           scrollX !== sx || scrollY !== sy) return;
       if (response.missing.length) state.warning = `언어 팩 필요: ${response.missing.join(", ")}`;
       if (response.warning) state.warning = response.warning;
+      if (typeof response.aiRefine === "boolean") state.aiRefine = response.aiRefine;
+      const imageRefineCandidates = [];
       for (const image of response.images) {
         const index = Number(String(image.k).slice(1));
         const candidate = candidates[index];
@@ -484,7 +719,10 @@
         // OCR을 기다리는 사이 이 이미지가 다른 그림으로 바뀌었거나(src·currentSrc) 새 그림을 불러오는 중이거나(!complete)
         // 자리·크기가 달라졌으면(같은 엘리먼트를 재사용하거나 옮기는 리더) 방금 받은 글자는 예전 그림 것이므로 버린다.
         if (!candidateUnchanged(candidate)) continue;
-        renderImage(candidate, image.items, image.langs);
+        renderImage(candidate, image.items, image.langs, isExternal() ? null : imageRefineCandidates);
+      }
+      if (!isExternal() && state.aiRefine && imageRefineCandidates.length) {
+        refineImageCandidates(imageRefineCandidates, pageGen, scrollGen).catch(() => {});
       }
     } finally {
       ocrInFlight = false;
@@ -506,11 +744,13 @@
   // 진행 중인 패스가 await에서 돌아올 때마다 부른다. pushState처럼 이벤트 없는 이동은 여기서야 알 수 있으므로,
   // 그사이 주소가 바뀌었으면 결과를 버리고 이번 패스가 끝난 뒤 새 페이지로 한 번 더 돈다(자동 번역일 때만 실제로 돈다).
   function stillCurrent(pageGen) {
+    if (contextDead) return false;
     if (checkNavigation()) state.rerun = true;
     return pageGen === state.pageGen;
   }
 
   async function runPass(manual = false) {
+    if (contextDead) return;
     if (state.running) {
       state.rerun = true;
       if (manual) state.rerunManual = true; // 진행 중인 패스가 끝나면 수동 번역도 그대로 이어서 한다
@@ -556,7 +796,7 @@
   // 이미 대기 중인 실행이 있으면 다시 걸지 않는다(0ms 타이머를 계속 되돌려 끝없이 미루는 일을 막는다).
   // 실제 통과 중이면 runPass가 rerun 표시로 알아서 이어받으므로 여러 번 걸어도 안전하다.
   function schedule() {
-    if (state.timer) return;
+    if (contextDead || state.timer) return;
     state.timer = setTimeout(() => {
       state.timer = 0;
       runPass(false);
@@ -757,7 +997,7 @@
   }
 
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (sender.id !== api.runtime.id || !message || typeof message.cmd !== "string") return false;
+    if (contextDead || sender.id !== api.runtime.id || !message || typeof message.cmd !== "string") return false;
     switch (message.cmd) {
       case "configure": {
         // 마지막 원문 보기보다 먼저 시작된 흐름이 늦게 보낸 설정은 자동 번역·번역 시작을 되살리지 못하게 버린다.

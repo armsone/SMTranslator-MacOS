@@ -207,6 +207,8 @@ final class AppModel {
     @ObservationIgnored private var remoteTask: Task<Void, Never>?
     @ObservationIgnored private var activeSession: TranslationSession?
     @ObservationIgnored private var configBackend: TranslationBackend?
+    /// Apple Intelligence 다듬기 작업(설정 켜짐 + 기기 내 모델 가능 시에만). 번역 재시작·문서 교체·취소 때 함께 취소한다.
+    @ObservationIgnored private var refineTasks: [Task<Void, Never>] = []
 
     /// Mail에서 요청한 메시지라 원격 이미지를 자동으로 불러왔는지(안내 문구용)
     private(set) var remoteAutoRequested = false
@@ -482,6 +484,8 @@ final class AppModel {
         if #available(macOS 26.0, *) { activeSession?.cancel() }
         activeSession = nil
         translationPhase = .idle
+        refineTasks.forEach { $0.cancel() }
+        refineTasks.removeAll()
         if externalTask != nil {
             externalTask?.cancel()
             externalTask = nil
@@ -746,6 +750,7 @@ final class AppModel {
                       let index = Int(client[client.index(after: bar)...]) else { continue }
                 pieces[String(client[..<bar]), default: [:]][index] = response.targetText
             }
+            var newlyDone: [String] = []
             for id in ids {
                 guard let chunks = chunkMap[id] else { continue }
                 let got = pieces[id] ?? [:]
@@ -755,10 +760,12 @@ final class AppModel {
                         joined += (got[index] ?? "") + chunk.separator
                     }
                     segmentStates[id] = .done(joined.trimmingCharacters(in: .whitespacesAndNewlines))
+                    newlyDone.append(id)
                 } else {
                     segmentStates[id] = .failed("번역 응답 일부가 누락되었습니다.")
                 }
             }
+            scheduleRefine(newlyDone, generation: generation)
         } catch {
             guard generation == translationGeneration, !Self.isCancellation(error), !Task.isCancelled else { return }
             if ids.count > 1 {
@@ -771,6 +778,60 @@ final class AppModel {
                 segmentStates[id] = .failed(Self.describe(error))
             }
         }
+    }
+
+    // MARK: - Apple Intelligence 다듬기 (설정 켜짐 + 기기 내 모델 가능 시에만, Mac 기본 번역 결과만)
+
+    /// 방금 .done이 된 줄만 작은 묶음으로 나눠 비동기로 다듬는다. 번역 자체는 이미 화면에 표시된 뒤이며,
+    /// 다듬기 결과가 와도 같은 줄 자리(같은 ID)만 바꾼다. 외부 AI·웹 번역기 결과는 다듬지 않는다.
+    private func scheduleRefine(_ ids: [String], generation: Int) {
+        guard !backend.isExternal, AppleTranslationRefiner.isEnabled, AppleTranslationRefiner.supportsTarget(targetLanguageID) else { return }
+        let doneIDs = ids.filter { if case .done? = segmentStates[$0] { return true } else { return false } }
+        guard !doneIDs.isEmpty else { return }
+        let targetName = Self.languageName(targetLanguageID)
+        var start = 0
+        while start < doneIDs.count {
+            let chunk = Array(doneIDs[start..<min(start + AppleTranslationRefiner.maxItemsPerBatch, doneIDs.count)])
+            start += AppleTranslationRefiner.maxItemsPerBatch
+            let items: [AppleTranslationRefiner.Item] = chunk.compactMap { id in
+                guard let original = segments[id]?.text, case .done(let draft)? = segmentStates[id] else { return nil }
+                return AppleTranslationRefiner.Item(key: id, original: original, draft: draft)
+            }
+            guard !items.isEmpty, let first = chunk.first else { continue }
+            let (nearbyOriginal, nearbyDraft) = nearbyRefineContext(for: first)
+            let task = Task { [weak self] in
+                guard let self else { return }
+                let result = await AppleTranslationRefiner.refine(
+                    items: items, nearbyOriginal: nearbyOriginal, nearbyDraft: nearbyDraft,
+                    targetLanguageName: targetName, isCurrent: { [weak self] in self?.translationGeneration == generation })
+                guard self.translationGeneration == generation, AppleTranslationRefiner.isEnabled, !result.isEmpty else { return }
+                for (key, text) in result {
+                    guard case .done? = self.segmentStates[key] else { continue }
+                    self.segmentStates[key] = .done(text)
+                }
+            }
+            refineTasks.append(task)
+        }
+    }
+
+    /// 다듬을 줄 바로 앞뒤(읽는 순서) 몇 줄의 원문·현재 번역문만 짧게 넘겨 맥락을 준다(문서 전체를 넘기지 않음).
+    private func nearbyRefineContext(for id: String) -> ([String], [String]) {
+        guard let index = segmentOrder.firstIndex(of: id) else { return ([], []) }
+        var originals: [String] = []
+        var drafts: [String] = []
+        let radius = AppleTranslationRefiner.maxNearbyLines
+        var offset = 1
+        while originals.count < radius && (index - offset >= 0 || index + offset < segmentOrder.count) {
+            for neighborIndex in [index - offset, index + offset] {
+                guard originals.count < radius, segmentOrder.indices.contains(neighborIndex) else { continue }
+                let neighborID = segmentOrder[neighborIndex]
+                guard let original = segments[neighborID]?.text, case .done(let draft)? = segmentStates[neighborID] else { continue }
+                originals.append(original)
+                drafts.append(draft)
+            }
+            offset += 1
+        }
+        return (originals, drafts)
     }
 
     private func failGroup(_ key: String, message: String) {

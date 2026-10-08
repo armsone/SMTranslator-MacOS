@@ -112,6 +112,30 @@ final class TranslationPatchesView: NSView {
         records.append(PatchRecord(patch: patch, tint: tint, label: label))
     }
 
+    /// Apple Intelligence 다듬기 등으로 같은 줄의 번역문만 바꾼다. 새 패치를 추가하지 않고(받은 줄 수에 영향 없음),
+    /// 위치·크기·글꼴·색상 계산은 그대로 두고 글자만 바꾼다.
+    func updateText(id: Int, text: String) {
+        guard !text.isEmpty, let index = records.firstIndex(where: { $0.patch.id == id }) else { return }
+        let record = records[index]
+        guard let blur = record.label.superview else { return }
+        let frameSize = blur.bounds.size
+        let font = fittingFont(for: text, in: frameSize)
+        let textWidth = frameSize.width - Self.horizontalPadding * 2
+        let textHeight = min(frameSize.height, textBoundingHeight(text, font: font, width: textWidth))
+        record.label.font = font
+        record.label.stringValue = text
+        record.label.frame = NSRect(
+            x: Self.horizontalPadding,
+            y: (frameSize.height - textHeight) / 2,
+            width: textWidth,
+            height: textHeight
+        )
+        records[index] = PatchRecord(patch: TranslatedPatch(id: record.patch.id, translatedText: text,
+                                                             boundingBox: record.patch.boundingBox,
+                                                             autoBackgroundColor: record.patch.autoBackgroundColor),
+                                      tint: record.tint, label: record.label)
+    }
+
     private func textBoundingHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         ceil((text as NSString).boundingRect(
             with: NSSize(width: max(1, width - 4), height: .greatestFiniteMagnitude),
@@ -122,7 +146,7 @@ final class TranslationPatchesView: NSView {
 
     /// 박스 높이에 맞춰 폰트 크기를 줄여가며 줄바꿈으로 채워지도록 크기를 고른다.
     private func fittingFont(for text: String, in size: NSSize) -> NSFont {
-        var fontSize = max(9, min(18, size.height * 0.7))
+        var fontSize = max(11, min(22, size.height * 0.847)).rounded()
         let minFontSize: CGFloat = 8
         while fontSize > minFontSize {
             let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)

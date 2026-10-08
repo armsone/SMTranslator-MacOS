@@ -9,6 +9,9 @@ import Vision
 struct DocumentTextParagraph {
     let text: String
     let box: CGRect
+    /// 공백이 아닌 글자 하나당 잉크 영역 근사치. box와 같은 Vision 원본 정규화 좌표(원점 좌하단)이며
+    /// 호출자가 변환한다. boundingRegion(for:)로 범위를 못 가져온 글자는 빠져 있을 수 있다.
+    let glyphBoxes: [CGRect]
 }
 
 /// 공용 문서 텍스트 인식 헬퍼. 세로쓰기 일본어처럼 줄 순서가 중요한 콘텐츠를 위해
@@ -59,7 +62,25 @@ enum DocumentTextRecognizer {
             guard averageConfidence >= 0.3 else { return nil }
             let box = paragraph.boundingRegion.normalizedPath.boundingBoxOfPath
             guard !box.isEmpty else { return nil }
-            return DocumentTextParagraph(text: text, box: box)
+            let glyphBoxes = glyphBoxes(in: paragraph.transcript) { try? paragraph.boundingRegion(for: $0) }
+            return DocumentTextParagraph(text: text, box: box, glyphBoxes: glyphBoxes)
         }
+    }
+
+    /// transcript의 공백이 아닌 글자마다 boundingRegion(for:)로 잉크 영역을 구한다. 범위를 못 구한 글자는
+    /// 건너뛸 뿐(문단 전체를 지우는 폴백은 쓰지 않음) 결과 개수는 ImageTextRecognizer.maxGlyphsPerItem개로 제한한다.
+    private static func glyphBoxes(in transcript: String, region: (Range<String.Index>) -> NormalizedRegion?) -> [CGRect] {
+        var boxes: [CGRect] = []
+        var index = transcript.startIndex
+        while index < transcript.endIndex, boxes.count < ImageTextRecognizer.maxGlyphsPerItem {
+            let next = transcript.index(after: index)
+            if !transcript[index].isWhitespace,
+               let box = region(index..<next)?.normalizedPath.boundingBoxOfPath,
+               let clamped = ImageTextRecognizer.clampedUnitBox(box) {
+                boxes.append(clamped)
+            }
+            index = next
+        }
+        return boxes
     }
 }

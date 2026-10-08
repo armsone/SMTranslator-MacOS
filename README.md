@@ -238,6 +238,11 @@ macOS 15 이상용 네이티브 앱입니다. 하나의 앱 안에 세 기능이
   페이지와 분리된 실행 공간으로 실행하며, 다른 주소로의 이동과 새 창은 막습니다. 서비스 페이지가 스스로 주소에 원문을
   적더라도 앱은 그 주소·원문·결과를 기록하거나 저장하지 않습니다.
 
+- **Apple Intelligence로 번역문 다듬기**(기본 켜짐, 설정에서 끌 수 있음): 화면·메일 번역과 Chrome·Whale 브라우저 번역에서
+  Mac 기본 번역 초안을 이 Mac의 온디바이스 Apple Intelligence 모델이 뜻을 바꾸지 않고 표현만 다시 다듬습니다. macOS 26
+  이상과 이 기기에서 지원하는 Apple Intelligence 모델을 쓸 수 있어야 하며, 지원하지 않거나 오류가 나면 Mac 기본 번역
+  초안을 그대로 둡니다(다른 방식으로 대체하지 않음). Safari 확장은 앱 설정을 읽을 수 없어 항상 Mac 기본 번역만
+  적용되며, 다른 외부 AI·웹 번역기 결과는 다듬지 않습니다. 실제 다듬기 품질은 아직 확인 전입니다.
 - 화면 번역의 Apple 방식은 여러 줄을 한 번에 스트리밍 배치로 번역해 끝나는 줄부터 바로 그립니다
   (원문 `자동 인식`이면 언어별 묶음마다 차례로).
 - 외부 AI 방식의 화면 번역은 인식한 **줄 텍스트만** 큰 묶음(최대 150줄·9,000자, 줄마다 따로 보내지 않음)으로 보내고,
@@ -402,6 +407,7 @@ Sources/
   # 브라우저 번역(0.4.0, 신규)
   BrowserProtocol.swift        확장 ↔ SMT 연결 공통 상수·프레임 입출력·서명 확인(앱·네이티브 메시징 도우미·Safari 확장 공용)
   BrowserEngineCore.swift      브라우저 번역 엔진(요청 검증 + Mac 기본 번역, 앱·Safari 확장 공용)
+  AppleTranslationRefiner.swift Apple Intelligence(온디바이스) 번역문 다듬기(기본 켜짐, 화면·메일·Chrome·Whale 공용)
   BrowserBridgeServer.swift    Chrome·Whale 네이티브 메시징 도우미가 접속하는 Unix 소켓 서버
   BrowserHostedTranslator.swift macOS 15–25용 .translationTask 기반 브라우저 번역기(화면 없는 보조 패널)
   BrowserIntegration.swift     브라우저 연동 설정·엔진 서버 수명·Chrome/Whale 설치 준비, Safari 상태

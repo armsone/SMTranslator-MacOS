@@ -12,6 +12,7 @@ struct AISettingsView: View {
     @State private var dockVisibility = DockVisibilityStore.shared
     @State private var mailButtonEnabled = MailToolbarButton.shared.isEnabled
     @State private var confirmClear = false
+    @State private var aiRefineEnabled = AppleTranslationRefiner.isEnabled
 
     var body: some View {
         Form {
@@ -35,6 +36,21 @@ struct AISettingsView: View {
                 Text("번역 방식")
             } footer: {
                 Text("화면 번역과 메일 번역이 같은 방식을 씁니다. 기본값은 Mac 기본 번역입니다. Apple Intelligence 우선은 macOS 26.4 이상에서만 고를 수 있습니다. ChatGPT·Claude·Gemini(웹 계정)와 DeepL·Google 번역·Papago(공식 웹페이지, 로그인 없음)는 고르기만 해서는 아무것도 보내지 않으며, 번역을 실행할 때만 텍스트를 보냅니다. 다른 방식으로 자동 대체하지 않습니다.")
+            }
+
+            Section {
+                Toggle("Apple Intelligence로 번역문 다듬기", isOn: Binding(
+                    get: { aiRefineEnabled },
+                    set: { enabled in
+                        aiRefineEnabled = enabled
+                        AppleTranslationRefiner.isEnabled = enabled
+                    }
+                ))
+                Text(AppleTranslationRefiner.availabilityReason).foregroundStyle(.secondary)
+            } header: {
+                Text("Apple Intelligence 다듬기")
+            } footer: {
+                Text("기본값은 켜짐입니다. Mac 기본 번역(기기 내)으로 받은 초안을 Apple Intelligence(이 Mac의 온디바이스 모델만, 서버로 보내지 않음)가 자연스러운 표현으로 다시 다듬어 같은 자리에 반영합니다. 메일·화면 번역과 Chrome·Whale 브라우저 번역에 적용되며, 외부 AI·웹 번역 결과는 다듬지 않습니다. macOS 26 이상과 이 기기의 Apple Intelligence 지원이 필요하며, 지원하는 모델을 쓸 수 없거나 오류가 나면 Mac 기본 번역 초안을 그대로 둡니다. Safari 확장은 별도의 독립된 보안 영역에서 실행되어 이 설정을 읽을 수 없으므로, 다듬기 없이 Mac 기본 번역만 적용됩니다. 끄면 다시 켤 때까지 꺼진 상태를 유지합니다.")
             }
 
             Section {
