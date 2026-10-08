@@ -586,6 +586,7 @@
 
   async function renderImage(candidate, items, langs, refineCandidates) {
     const { img, rect, clip } = candidate;
+    const pageGen = state.pageGen, scrollGen = state.scrollGen, fontStyle = state.fontStyle;
     const previous = imageRecords.get(img);
     if (previous) previous.box.remove();
     const root = layer();
@@ -596,6 +597,22 @@
     box.style.width = `${clip.w}px`;
     box.style.height = `${clip.h}px`;
     root.appendChild(box);
+    // 글꼴 로딩 중에도 기존 취소 경로가 이 상자를 제거할 수 있도록 먼저 등록한다.
+    const record = {
+      key: candidate.key, box,
+      offX: clip.x - rect.left, offY: clip.y - rect.top, w: clip.w, h: clip.h,
+      elemW: rect.width, elemH: rect.height,
+      langs: langs && typeof langs === "object" ? langs : undefined,
+      items
+    };
+    imageRecords.set(img, record);
+    const renderCurrent = () => {
+      if (stillCurrent(pageGen) && state.scrollGen === scrollGen && state.fontStyle === fontStyle &&
+          imageRecords.get(img) === record && candidateUnchanged(candidate)) return true;
+      box.remove();
+      if (imageRecords.get(img) === record) imageRecords.delete(img);
+      return false;
+    };
 
     // 너무 작아 읽기 어려운 글자가 조용히 남지 않도록 최소 글자 크기를 12px로 둔다(0.6.2까지의 8px보다 큼).
     const MIN_FONT = 12;
@@ -744,7 +761,9 @@
 
       // 실제 쓰일 글꼴이 불러와진 뒤에 재야 fitFontSize의 측정(scrollWidth/scrollHeight)이 맞는다(비동기 webfont 로드 기다림).
       await loadBundledFont(fontStyle);
+      if (!renderCurrent()) return;
       const scale = await opticalScale(fontStyle);
+      if (!renderCurrent()) return;
       const scaledMin = Math.min(MAX_FONT - 1, Math.round(MIN_FONT * scale));
       const preferredMax = Math.min(MAX_FONT, Math.max(scaledMin, Math.round(estimate * scale)));
       fitted[i] = fitFontSize(div, text, scaledMin, preferredMax, vertical);
@@ -766,13 +785,7 @@
       });
     });
 
-    imageRecords.set(img, {
-      key: imageKey(img), box,
-      offX: clip.x - rect.left, offY: clip.y - rect.top, w: clip.w, h: clip.h,
-      elemW: rect.width, elemH: rect.height,
-      langs: langs && typeof langs === "object" ? langs : undefined, // 구버전 응답이면 생략: 미판별로 둔갑시키지 않는다
-      items // 글꼴 변경 때 재캡처·재번역 없이 같은 조각으로 다시 그리기 위한 캐시(마스킹·위치는 그대로 재사용)
-    });
+    renderCurrent();
   }
 
   /** 글꼴 설정이 바뀌었을 때 이미 그려진 이미지 덮개를 재캡처·재번역 없이 다시 그린다(글자색·마스킹·자리는 그대로). */
@@ -781,7 +794,7 @@
       if (!img.isConnected || !Array.isArray(record.items)) continue;
       const rect = img.getBoundingClientRect();
       const candidate = {
-        img, rect,
+        img, rect, key: record.key,
         clip: { x: rect.left + record.offX, y: rect.top + record.offY, w: record.w, h: record.h }
       };
       renderImage(candidate, record.items, record.langs, null).catch(() => {});
