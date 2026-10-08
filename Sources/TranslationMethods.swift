@@ -6,6 +6,12 @@ import Translation
 // 선택값(방식 이름)만 UserDefaults에 저장하며, 고르는 것만으로는 아무 내용도 보내지 않는다.
 
 extension TranslationBackend {
+    // 외부 6개 서비스는 당분간 숨긴다. 계정·동의·구현은 보존한다.
+    static let externalOptionsVisible = false
+    static var visibleCases: [TranslationBackend] {
+        allCases.filter { externalOptionsVisible || !$0.isExternal }
+    }
+
     /// 화면 번역 툴바처럼 좁은 곳에 쓰는 짧은 이름
     var shortTitle: String {
         switch self {
@@ -60,6 +66,9 @@ final class TranslationBackendStore {
 
     var backend: TranslationBackend {
         didSet {
+            if backend.isExternal && !TranslationBackend.externalOptionsVisible {
+                backend = .system
+            }
             guard oldValue != backend else { return }
             UserDefaults.standard.set(backend.rawValue, forKey: TranslationBackend.defaultsKey)
             for observer in observers { observer(oldValue, backend) }
@@ -71,7 +80,8 @@ final class TranslationBackendStore {
     private init() {
         let stored = UserDefaults.standard.string(forKey: TranslationBackend.defaultsKey)
             .flatMap(TranslationBackend.init(rawValue:)) ?? .system
-        backend = stored == .intelligence && !TranslationBackend.intelligenceSupported ? .system : stored
+        backend = (stored.isExternal && !TranslationBackend.externalOptionsVisible)
+            || (stored == .intelligence && !TranslationBackend.intelligenceSupported) ? .system : stored
     }
 
     /// 방식이 바뀔 때(이전 값, 새 값) 호출된다. 메일 모델과 화면 모델이 각자 진행 중 작업을 정리한다.

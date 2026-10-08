@@ -114,6 +114,21 @@ final class BrowserIntegration: ObservableObject {
     func applicationDidLaunch() {
         if isEnabled || launchedByBrowser { startServer() }
         refreshRegistrations()
+        // 기존에 설치 준비한 확장만 갱신한다. 브라우저 등록·허용 설정은 바꾸지 않는다.
+        let staged = stagedExtensionURL
+        if isInstalledInApplications,
+           FileManager.default.fileExists(atPath: staged.appendingPathComponent(Self.stagingMarker).path),
+           let bundled = bundledChromiumExtension,
+           let currentManifest = try? Data(contentsOf: bundled.appendingPathComponent("manifest.json")),
+           let stagedManifest = try? Data(contentsOf: staged.appendingPathComponent("manifest.json")),
+           currentManifest != stagedManifest {
+            do {
+                try stageExtension()
+                lastMessage = "브라우저 확장 파일을 갱신했습니다. Chrome·Whale 확장 관리 화면에서 SMT를 새로고침한 뒤 웹페이지도 새로고침해 주세요."
+            } catch {
+                lastMessage = "브라우저 확장 갱신 실패: \(error.localizedDescription)"
+            }
+        }
     }
 
     func applicationWillTerminate() {
@@ -144,7 +159,7 @@ final class BrowserIntegration: ObservableObject {
             // 확장에서 웹 번역 엔진을 고른 요청만 앱의 웹 번역 실행기로 넘긴다(앱 쪽 제공사별 동의 필요).
             // Apple Intelligence 다듬기는 이 앱 본체 엔진(Chrome·Whale)에서만 연결한다. Safari 확장은 앱 설정을
             // 읽을 수 없어 별도 엔진 인스턴스(refiner 없음)를 쓰며, 여기서 손대지 않는다.
-            let engine = BrowserEngine(translator: translator, external: WebTranslatorBrowserBridge(),
+            let engine = BrowserEngine(translator: translator, external: TranslationBackend.externalOptionsVisible ? WebTranslatorBrowserBridge() : nil,
                                        refiner: AppleBrowserRefiner(),
                                        isEnabled: { UserDefaults.standard.bool(forKey: key) })
             server = BrowserBridgeServer(engine: engine)
@@ -276,16 +291,28 @@ final class BrowserIntegration: ObservableObject {
             throw SetupError("이 SMT 빌드에 브라우저 확장이 들어 있지 않습니다.")
         }
         let destination = stagedExtensionURL
-        if fileManager.fileExists(atPath: destination.path) {
-            // 이 앱이 만든 폴더(표식 파일 있음)만 교체한다. 다른 파일이 있으면 지우지 않고 멈춘다.
+        let existed = fileManager.fileExists(atPath: destination.path)
+        if existed {
             guard fileManager.fileExists(atPath: destination.appendingPathComponent(Self.stagingMarker).path) else {
                 throw SetupError("\(destination.path) 에 SMT가 만들지 않은 파일이 있어 덮어쓰지 않았습니다.")
             }
-            try fileManager.removeItem(at: destination)
         }
-        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try fileManager.copyItem(at: source, to: destination)
-        try Data("SMTranslator browser extension\n".utf8).write(to: destination.appendingPathComponent(Self.stagingMarker))
+        let parent = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        let prepared = parent.appendingPathComponent(".smt-extension-new-\(UUID().uuidString)")
+        let backup = parent.appendingPathComponent(".smt-extension-backup-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: prepared) }
+        try fileManager.copyItem(at: source, to: prepared)
+        try Data("SMTranslator browser extension\n".utf8).write(to: prepared.appendingPathComponent(Self.stagingMarker))
+        if existed { try fileManager.moveItem(at: destination, to: backup) }
+        do {
+            try fileManager.moveItem(at: prepared, to: destination)
+        } catch {
+            if existed { try fileManager.moveItem(at: backup, to: destination) }
+            throw error
+        }
+        if existed { try? fileManager.removeItem(at: backup) }
+
     }
 
     private func writeHostManifest(for browser: ChromiumBrowser) throws {

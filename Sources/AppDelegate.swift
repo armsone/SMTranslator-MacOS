@@ -343,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let current = TranslationBackendStore.shared.backend
-        for backend in TranslationBackend.allCases {
+        for backend in TranslationBackend.visibleCases {
             if backend == .chatgpt || backend == .deepl { submenu.addItem(.separator()) }
             let entry = NSMenuItem(title: "\(backend.title) — \(backend.detail)", action: #selector(selectBackend(_:)), keyEquivalent: "")
             entry.target = self

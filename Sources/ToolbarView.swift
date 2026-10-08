@@ -72,6 +72,7 @@ struct PatchColorSettingsView: View {
         case .auto: return "자동(기본)"
         case .gothic: return "고딕"
         case .myeongjo: return "명조"
+        case .gungseo: return "궁서"
         case .hand: return "손글씨"
         }
     }
@@ -90,12 +91,12 @@ struct PatchColorSettingsView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .help("자동은 원본 글자 획의 두께·규칙성을 가볍게 보고 고릅니다. 정확한 글꼴 식별은 아니며, 애매하면 고딕을 씁니다.")
+                .help("자동은 원본 글자 모양으로 추정하며, 애매하면 고딕을 씁니다.")
             }
 
             Toggle("자동 색상 (캡처 배경에서 추출)", isOn: useAutoColors)
                 .toggleStyle(.checkbox)
-                .help("켜면 원문 줄 뒤 배경색을 캡처 이미지에서 추출해 배경으로 쓰고, 그 밝기에 맞춰 글자색을 검정/흰색 중 자동으로 고릅니다.")
+                .help("원문 배경에 맞춰 배경색과 글자색을 자동으로 고릅니다.")
 
             VStack(alignment: .leading, spacing: 6) {
                 ColorPicker("배경색", selection: manualBackgroundColor, supportsOpacity: false)

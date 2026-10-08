@@ -99,7 +99,7 @@ function render(state) {
     $("engineNote").appendChild(revoke);
   }
   $("images").checked = state.settings.images;
-  $("fontStyle").value = ["auto", "gothic", "myeongjo", "hand"].includes(state.settings.fontStyle) ? state.settings.fontStyle : "auto";
+  $("fontStyle").value = ["auto", "gothic", "myeongjo", "gungseo", "hand"].includes(state.settings.fontStyle) ? state.settings.fontStyle : "auto";
   $("translate").disabled = tabId === null;
   // 이 탭이 아직 번역되지 않았어도 전역 자동 번역이 켜져 있으면 전역으로 끌 수 있어야 한다.
   $("original").disabled = !state.page && !state.settings.automaticEnabled;

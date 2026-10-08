@@ -279,18 +279,21 @@ enum ImageTextRecognizer {
         }
         guard widthCVs.count >= 2 else { return nil } // 표본이 너무 적으면 미판별로 둔다
 
-        let avgIrregularity = irregularities.reduce(0, +) / Double(irregularities.count)
-        let avgWidthCV = widthCVs.reduce(0, +) / Double(widthCVs.count)
-        if avgIrregularity > 0.42 { return "hand" }
-        if avgWidthCV > 0.55 { return "myeongjo" }
+        // 한 글자의 특이한 모양이 문단 전체를 결정하지 않도록, 유효 표본의 60% 이상이 같은
+        // 특징을 보일 때만 명조/손글씨로 분류한다. 임계값은 경험적 휴리스틱이며 정확한 식별은 아니다.
+        let requiredVotes = max(2, Int(ceil(Double(widthCVs.count) * 0.6)))
+        let handVotes = zip(widthCVs, irregularities).filter { $0.0 > 0.22 && $0.1 > 0.4 }.count
+        if handVotes >= requiredVotes { return "hand" }
+        let serifVotes = zip(widthCVs, irregularities).filter { $0.0 > 0.4 && $0.1 <= 0.4 }.count
+        if serifVotes >= requiredVotes { return "myeongjo" }
         return "gothic"
     }
 
-    /// 작은 흑백 그리드로 내려 찍어 획 두께 변동계수(가로 run-length 분산)와 가장자리 불규칙성(연속한
-    /// 행에서 획 시작 위치가 얼마나 들쭉날쭉한지)을 잰다. 정밀한 글자 모양 분석이 아니라 대략적 통계이며,
-    /// 오탐이 있을 수 있다(수동으로 고를 수 있어야 하는 이유).
+    /// 각 픽셀을 지나는 가로·세로 run 중 짧은 쪽으로 획 두께를 근사한다. 가로 run만 쓰면
+    /// 긴 가로획 자체가 "두꺼운 획"으로 계산되는 문제가 있다. 윤곽의 꺾임은 글자 전체 크기가
+    /// 아닌 대표 획 두께로 나누므로 얇은 손글씨의 작은 흔들림도 유효한 척도로 측정된다.
     private static func strokeStats(of image: CGImage) -> (widthCV: Double, edgeIrregularity: Double)? {
-        let grid = 24
+        let grid = 32
         var pixels = [UInt8](repeating: 0, count: grid * grid * 4)
         guard let ctx = CGContext(data: &pixels, width: grid, height: grid, bitsPerComponent: 8, bytesPerRow: grid * 4,
                                    space: CGColorSpaceCreateDeviceRGB(),
@@ -301,46 +304,72 @@ enum ImageTextRecognizer {
         func luminance(_ x: Int, _ y: Int) -> Double {
             let idx = (y * grid + x) * 4
             let a = Double(pixels[idx + 3]) / 255
-            guard a > 0.05 else { return 1 } // 투명은 배경으로 본다
+            guard a > 0.05 else { return 1 }
             let r = min(Double(pixels[idx]) / 255 / a, 1), g = min(Double(pixels[idx + 1]) / 255 / a, 1),
                 b = min(Double(pixels[idx + 2]) / 255 / a, 1)
             return 0.299 * r + 0.587 * g + 0.114 * b
         }
-        var total = 0.0
-        for y in 0..<grid { for x in 0..<grid { total += luminance(x, y) } }
-        let mean = total / Double(grid * grid)
-        func isInk(_ x: Int, _ y: Int) -> Bool { luminance(x, y) < mean - 0.12 }
+        let levels = (0..<(grid * grid)).map { luminance($0 % grid, $0 / grid) }
+        let ordered = levels.sorted()
+        let low = ordered[ordered.count / 10], high = ordered[ordered.count * 9 / 10]
+        guard high - low >= 0.15 else { return nil } // 저대비·빈 상자는 분류하지 않는다
+        let threshold = (low + high) / 2
+        let border = (0..<grid).flatMap { i in [luminance(i, 0), luminance(i, grid - 1),
+                                                 luminance(0, i), luminance(grid - 1, i)] }.sorted()
+        let darkInk = border[border.count / 2] >= threshold
+        let ink = levels.map { darkInk ? $0 < threshold : $0 > threshold }
+        let inkCount = ink.filter { $0 }.count
+        guard inkCount >= 12, inkCount < grid * grid * 3 / 4 else { return nil }
 
-        var runWidths: [Double] = []
-        var previousStart: Int?
-        var edgeShifts: [Double] = []
-        for y in 0..<grid {
-            var x = 0
-            var firstStart: Int?
-            while x < grid {
-                if isInk(x, y) {
-                    let start = x
-                    if firstStart == nil { firstStart = start }
-                    var end = x
-                    while end < grid, isInk(end, y) { end += 1 }
-                    runWidths.append(Double(end - start))
-                    x = end
-                } else {
-                    x += 1
+        var horizontal = [Int](repeating: 0, count: grid * grid)
+        var vertical = horizontal
+        var edges: [[Int?]] = []
+        for alongRows in [true, false] {
+            var first = [Int?](repeating: nil, count: grid)
+            var last = first
+            for line in 0..<grid {
+                var position = 0
+                while position < grid {
+                    let index = alongRows ? line * grid + position : position * grid + line
+                    guard ink[index] else { position += 1; continue }
+                    let start = position
+                    while position < grid && ink[alongRows ? line * grid + position : position * grid + line] {
+                        position += 1
+                    }
+                    if first[line] == nil { first[line] = start }
+                    last[line] = position - 1
+                    for offset in start..<position {
+                        let pixel = alongRows ? line * grid + offset : offset * grid + line
+                        if alongRows { horizontal[pixel] = position - start }
+                        else { vertical[pixel] = position - start }
+                    }
                 }
             }
-            if let start = firstStart {
-                if let previousStart { edgeShifts.append(Double(abs(start - previousStart))) }
-                previousStart = start
+            edges.append(first)
+            edges.append(last)
+        }
+        let widths = ink.indices.compactMap { index -> Double? in
+            guard ink[index] else { return nil }
+            let width = min(horizontal[index], vertical[index])
+            // 큰 교차점·뭉친 상자는 획 두께 표본에서 제외한다.
+            return width > 0 && width <= grid / 3 ? Double(width) : nil
+        }.sorted()
+        guard widths.count >= 12 else { return nil }
+        let typicalWidth = widths[widths.count / 2]
+        let mean = widths.reduce(0, +) / Double(widths.count)
+        let variance = widths.reduce(0.0) { $0 + ($1 - mean) * ($1 - mean) } / Double(widths.count)
+        var bends: [Double] = []
+        for edge in edges {
+            for i in 1..<(grid - 1) {
+                guard let a = edge[i - 1], let b = edge[i], let c = edge[i + 1],
+                      abs(b - a) <= grid / 4, abs(c - b) <= grid / 4 else { continue }
+                // 일정한 기울기 자체는 불규칙성이 아니다. 떨어진 부품 사이의 큰 점프도 제외한다.
+                bends.append(Double(abs(c - 2 * b + a)))
             }
         }
-        guard runWidths.count >= 3 else { return nil }
-        let meanWidth = runWidths.reduce(0, +) / Double(runWidths.count)
-        guard meanWidth > 0 else { return nil }
-        let variance = runWidths.reduce(0.0) { $0 + ($1 - meanWidth) * ($1 - meanWidth) } / Double(runWidths.count)
-        let widthCV = variance.squareRoot() / meanWidth
-        let edgeIrregularity = edgeShifts.isEmpty ? 0 : (edgeShifts.reduce(0, +) / Double(edgeShifts.count)) / Double(grid)
-        return (widthCV, edgeIrregularity)
+        guard bends.count >= 8 else { return nil }
+        let irregularity = bends.reduce(0, +) / Double(bends.count) / max(typicalWidth, 1)
+        return (variance.squareRoot() / mean, irregularity)
     }
 
     private static func needsNoSpace(_ a: Unicode.Scalar?, _ b: Unicode.Scalar?) -> Bool {

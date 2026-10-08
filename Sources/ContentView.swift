@@ -107,26 +107,25 @@ struct ContentView: View {
         }
         ToolbarItem(id: "backend", placement: .automatic) {
             Picker("번역 방식", selection: $model.backend) {
-                ForEach(TranslationBackend.allCases.filter { !$0.isExternal }) { backend in
+                ForEach(TranslationBackend.visibleCases.filter { !$0.isExternal }) { backend in
                     Text("\(backend.title) — \(backend.detail)")
                         .tag(backend)
                         .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
                 }
-                Divider()
-                ForEach(TranslationBackend.allCases.filter { $0.provider != nil }) { backend in
-                    Text("\(backend.title) — \(backend.detail)").tag(backend)
-                }
-                Divider()
-                ForEach(TranslationBackend.allCases.filter { $0.webTranslator != nil }) { backend in
-                    Text("\(backend.title) — \(backend.detail)").tag(backend)
+                if TranslationBackend.externalOptionsVisible {
+                    Divider()
+                    ForEach(TranslationBackend.visibleCases.filter { $0.provider != nil }) { backend in
+                        Text("\(backend.title) — \(backend.detail)").tag(backend)
+                    }
+                    Divider()
+                    ForEach(TranslationBackend.visibleCases.filter { $0.webTranslator != nil }) { backend in
+                        Text("\(backend.title) — \(backend.detail)").tag(backend)
+                    }
                 }
             }
             .labelsHidden()
             .frame(width: 210)
-            .help((TranslationBackend.intelligenceSupported
-                  ? "번역 방식. 'Apple Intelligence 우선'은 Apple Intelligence가 켜져 있고 해당 언어를 지원하면 그 모델을 우선 쓰고, 사용할 수 없으면 Mac 기본 번역으로 처리합니다. 실제로 어느 모델이 쓰였는지는 시스템이 결정하며 앱에서 확인할 수 없습니다. 바꾸면 현재 본문과 이미지 글자를 다시 번역합니다."
-                  : "Apple Intelligence 우선 번역은 macOS 26.4 이상에서만 선택할 수 있습니다.")
-                  + " ChatGPT·Claude·Gemini는 설정에서 로그인한 웹 계정으로, DeepL·Google 번역·Papago는 로그인 없이 공식 번역 웹페이지로 번역합니다. 고르기만 해서는 메일을 보내지 않고 번역을 실행할 때만 제목·본문·이미지 글자를 보냅니다. 고른 방식은 다음 메일과 화면 번역에도 함께 쓰입니다.")
+            .help("Mac 기본 번역 또는 Apple Intelligence 우선 번역을 고릅니다.")
         }
         ToolbarItem(id: "display", placement: .automatic) {
             Menu {

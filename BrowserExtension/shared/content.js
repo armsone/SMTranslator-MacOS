@@ -36,7 +36,7 @@
     "[contenteditable='']", "[contenteditable='true']", "smt-translator-layer"
   ].join(",");
 
-  const FONT_STYLES = ["auto", "gothic", "myeongjo", "hand"];
+  const FONT_STYLES = ["auto", "gothic", "myeongjo", "gungseo", "hand"];
 
   const state = {
     auto: false,
@@ -191,11 +191,12 @@
 
   // MARK: 글꼴(고딕/명조/손글씨) — 패키지에 포함한 글꼴만 쓴다(온라인 Google Fonts·사용자 설치 글꼴 의존 안 함)
 
-  const FONT_FILES = { gothic: "fonts/NanumGothic-Regular.ttf", myeongjo: "fonts/NanumMyeongjo-Regular.ttf", hand: "fonts/NanumPenScript-Regular.ttf" };
-  const FONT_FAMILIES = { gothic: "SMTNanumGothic", myeongjo: "SMTNanumMyeongjo", hand: "SMTNanumPen" };
+  const FONT_FILES = { gothic: "fonts/NanumGothic-Regular.ttf", myeongjo: "fonts/NanumMyeongjo-Regular.ttf", gungseo: "fonts/ChosunGs.ttf", hand: "fonts/NanumPenScript-Regular.ttf" };
+  const FONT_FAMILIES = { gothic: "SMTNanumGothic", myeongjo: "SMTNanumMyeongjo", gungseo: "SMTChosunGungseo", hand: "SMTNanumPen" };
   const FONT_FALLBACKS = {
     gothic: "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
     myeongjo: "'Apple SD Gothic Neo',serif",
+    gungseo: "serif",
     hand: "cursive"
   };
   const fontLoadPromises = new Map();
@@ -254,7 +255,7 @@
   /** 자동 글꼴일 때 원본 글자 특징(item.fs)으로 고른 갈래, 수동이면 사용자가 고른 갈래로 확정한다. 알 수 없는
    * 값·미판별은 고딕으로 대체한다(가짜로 정확히 식별한 척하지 않음). */
   function resolveFontStyle(itemFontStyle) {
-    if (state.fontStyle === "gothic" || state.fontStyle === "myeongjo" || state.fontStyle === "hand") return state.fontStyle;
+    if (state.fontStyle !== "auto" && FONT_STYLES.includes(state.fontStyle)) return state.fontStyle;
     return itemFontStyle === "myeongjo" || itemFontStyle === "hand" ? itemFontStyle : "gothic";
   }
 
@@ -531,30 +532,29 @@
   // 기존 범위로는 한국어 번역문이 세로로 좁고 긴 상자에 들어가도 가로쓰기로만 그려졌다.
   const LETTER_CJK = /[ᄀ-ᇿ㄰-㆏가-힣぀-ヿ㐀-䶿一-鿿豈-﫿]/;
 
-  // 실제 배치된 상자 크기에 맞춰 이진 탐색으로 가장 큰 글꼴을 찾는다(반복 횟수 고정으로 유한 종료).
-  // div(.t)는 overflow:hidden에 가운데 정렬된 flex 부모라 자신의 scrollWidth/scrollHeight만으로는 양쪽으로
-  // 고르게 넘친 내용을 제대로 못 잡을 수 있다(가운데 정렬 넘침은 시작 쪽이 scrollWidth에 반영되지 않는 엔진이
-  // 있다). 대신 안쪽 text(.tt, overflow:visible, flex-shrink:0)의 자기 크기를 바깥 div의 가용 치수와 직접
-  // 비교한다. inline-size(글이 흐르는 가로 축)는 writing-mode에서 가로쓰기면 physical width, 세로쓰기면
-  // physical height로 매핑되므로, 그 쪽만 가용 치수로 고정해 줄바꿈(가로 줄 또는 세로 칸)이 일어나게 하고
-  // 반대 축은 auto로 열어 둬 넘침이 그 축의 scroll 치수로 그대로 드러나게 한다.
+  // 말풍선은 여유 영역을 조금 허용한다. 글자를 잘라내거나 스크롤바 안에 가두지 않는다.
   function fitFontSize(div, text, minFont, preferredMax, vertical) {
-    // 글꼴 변경·재조정 때 이전 호출이 남긴 overflow(visible/auto)가 이번 측정에 끼어들지 않도록 기본값(hidden,
-    // CSS .t 참고)으로 되돌린 뒤 다시 잰다. 그래야 이제 들어가는 글도 불필요한 스크롤바가 남지 않는다.
-    div.style.overflow = "hidden";
+    div.style.overflow = "visible";
     div.style.pointerEvents = "none";
-    div.removeAttribute("title");
-    div.removeAttribute("aria-label");
+    text.style.lineHeight = "1.15";
+    text.style.transform = "";
+    const image = div.parentElement;
+    const extraWidth = vertical ? div.offsetLeft : image.clientWidth - div.offsetLeft - div.offsetWidth;
+    const extraHeight = image.clientHeight - div.offsetTop - div.offsetHeight;
+    const width = div.clientWidth + Math.min(minFont * 1.5, Math.max(0, extraWidth));
+    const height = div.clientHeight + Math.min(minFont * 0.8, Math.max(0, extraHeight));
     if (vertical) {
-      text.style.height = `${div.clientHeight}px`;
+      text.style.height = `${height}px`;
       text.style.width = "auto";
     } else {
-      text.style.width = `${div.clientWidth}px`;
+      text.style.width = `${width}px`;
       text.style.height = "auto";
     }
-    const fits = () => text.scrollWidth <= div.clientWidth + 1 && text.scrollHeight <= div.clientHeight + 1;
-    let lo = minFont;
-    let hi = preferredMax;
+    const fits = () => text.scrollWidth <= width + 1 && text.scrollHeight <= height + 1;
+    div.style.fontSize = `${minFont}px`;
+    const floor = fits() ? minFont : 4;
+    let lo = floor;
+    let hi = Math.max(minFont, preferredMax);
     div.style.fontSize = `${hi}px`;
     if (!fits()) {
       for (let iter = 0; iter < 7; iter += 1) {
@@ -562,24 +562,13 @@
         div.style.fontSize = `${mid}px`;
         if (fits()) lo = mid; else hi = mid;
       }
-      div.style.fontSize = `${Math.max(minFont, Math.floor(lo))}px`;
+      div.style.fontSize = `${Math.max(floor, Math.floor(lo))}px`;
     }
-    // 최소 글자 크기에서도 원래 좁은 칸에 다 들어가지 않으면: 먼저 줄 간격을 좁혀 한 번 더 시도한다.
-    // 그래도 안 들어가면 그림·이웃 칸을 덮거나 글자를 잘라내는 대신, 원래 상자 안에서만 지역적으로
-    // 스크롤되게 한다(overflow:auto). 원본 마스킹·상자 위치·크기는 그대로이고, 브라우저 기본 스크롤바가
-    // 필요할 때만 상자 안쪽에 나타난다(번역문 전체는 항상 그대로 보존되어 잘리지 않는다).
-    if (!fits()) {
-      text.style.lineHeight = "1";
-      if (!fits()) {
-        div.style.overflow = "auto";
-        div.style.pointerEvents = "auto";
-        div.title = text.textContent;
-        div.setAttribute("aria-label", text.textContent);
-        console.warn(
-          `SMT: 텍스트가 칸(${Math.round(div.clientWidth)}x${Math.round(div.clientHeight)}px)에 ` +
-          `최소 글자 크기(${minFont}px)로도 다 들어가지 않아 칸 안에서 스크롤됩니다(필요 ${Math.round(text.scrollWidth)}x${Math.round(text.scrollHeight)}px).`
-        );
-      }
+    // 아주 긴 번역도 여유 영역을 넘어 이웃 말풍선을 계속 덮지는 않게 한다.
+    const scale = fits() ? 1 : Math.min(width / Math.max(1, text.scrollWidth), height / Math.max(1, text.scrollHeight));
+    if (scale < 1) {
+      text.style.transformOrigin = vertical ? "top right" : "top left";
+      text.style.transform = `scale(${scale})`;
     }
     return parseFloat(div.style.fontSize) || minFont;
   }
@@ -723,8 +712,7 @@
       idxs.forEach((i) => { geoms[i].estimate = median; });
     });
 
-    // 번역 글자는 투명 배경으로, 원본 OCR 테두리 안에 그대로 두되 원문 방향 기준(가로쓰기 좌상단,
-    // 세로쓰기 위에서부터)으로 맞춘다(가로 확장 없음).
+    // 번역 글자는 투명 배경으로 원문 위치에서 시작하며, 글자 영역을 조금 벗어날 수 있다.
     const divs = new Array(items.length);
     const texts = new Array(items.length);
     const fitted = new Array(items.length);
@@ -778,10 +766,9 @@
       const minFitted = Math.min(...idxs.map((i) => fitted[i]));
       idxs.forEach((i) => {
         if (fitted[i] === minFitted) return;
-        divs[i].style.overflow = "hidden";
+        divs[i].style.overflow = "visible";
         divs[i].style.fontSize = `${minFitted}px`;
-        texts[i].style.lineHeight = "1.15";
-        fitted[i] = minFitted;
+        fitted[i] = fitFontSize(divs[i], texts[i], minFitted, minFitted, geoms[i].vertical);
       });
     });
 
@@ -812,6 +799,7 @@
       return;
     }
     if (!stillCurrent(pageGen) || state.scrollGen !== scrollGen || isExternal()) return;
+    let changed = false;
     for (const item of response.items || []) {
       const index = Number(String(item.k).slice(1));
       const candidate = candidates[index];
@@ -820,10 +808,12 @@
       const refined = item.t.trim();
       if (!refined) continue;
       candidate.el.textContent = refined;
+      changed = true;
       // 캐시(record.items)도 같은 참조를 공유하므로 여기서 갱신해야, 글꼴만 바꿔 재캡처 없이 다시 그릴 때
       // (rerenderImageFonts) 다듬기 전 초안으로 되돌아가지 않는다.
       if (candidate.items && candidate.items[candidate.index]) candidate.items[candidate.index].t = refined;
     }
+    if (changed) rerenderImageFonts();
   }
 
   // 뷰포트와 겹치는 넓이(px^2). 화면 밖이거나 가려진 부분은 0이 되어, 보이지 않는 광고 등에 걸린 애니메이션을

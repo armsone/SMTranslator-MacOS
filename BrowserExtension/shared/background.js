@@ -25,10 +25,11 @@ const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16, glyphs
 const EXTERNAL_LIMITS = { texts: 12, chars: 15000 };
 const TIMEOUT = { hello: 15000, text: 60000, ocr: 90000, external: 600000, refine: 20000 };
 const LOCAL_ENGINE = "apple";
-const EXTERNAL_ENGINES = IS_SAFARI ? [] : ["deepl", "google", "papago"];
+// 외부 번역 서비스는 당분간 숨긴다. 저장된 동의는 삭제하지 않는다.
+const EXTERNAL_ENGINES = [];
 const CAPTURE_MIN_INTERVAL = 700; // Chrome captureVisibleTab 호출 빈도 제한(초당 2회) 아래로 유지
 const CAPTURE_TTL = 15000;
-const FONT_STYLES = ["auto", "gothic", "myeongjo", "hand"];
+const FONT_STYLES = ["auto", "gothic", "myeongjo", "gungseo", "hand"];
 const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [],
                    fontStyle: "auto" };
 
@@ -50,7 +51,7 @@ function originOf(url) {
 async function loadSettings() {
   const stored = await api.storage.local.get(DEFAULTS);
   const engineConsents = Array.isArray(stored.engineConsents)
-    ? stored.engineConsents.filter((engine) => EXTERNAL_ENGINES.includes(engine))
+    ? stored.engineConsents.filter((engine) => ["deepl", "google", "papago"].includes(engine))
     : [];
   // 웹 번역 엔진은 이 브라우저에서 지원하고 그 엔진에 동의했을 때만 쓴다. 아니면 Mac 기본 번역.
   const engine = EXTERNAL_ENGINES.includes(stored.engine) && engineConsents.includes(stored.engine) ? stored.engine : LOCAL_ENGINE;

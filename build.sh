@@ -104,7 +104,7 @@ stage_extension() {
   cp "$ICON_DIR"/icon*.png "$dest/icons/"
   # 고딕/명조/손글씨 글꼴(패키지 번들, 온라인 Google Fonts 의존 안 함). 라이선스(OFL)도 함께 접근 가능하게 둔다.
   cp "$ROOT_DIR/Resources/Fonts"/*.ttf "$dest/fonts/"
-  cp "$ROOT_DIR/Resources/Fonts"/*-OFL.txt "$dest/fonts/"
+  cp "$ROOT_DIR/Resources/Fonts"/*-OFL.txt "$ROOT_DIR/Resources/Fonts"/*-LICENSE.txt "$dest/fonts/"
   sed "s/__SMT_VERSION__/$APP_VERSION/" "$manifest" > "$dest/manifest.json"
   plutil -convert json -o /dev/null "$dest/manifest.json"
 }
@@ -150,7 +150,7 @@ cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.ic
 cp "$ROOT_DIR/Resources/aibi-browser-runtime.js" "$ROOT_DIR/Resources/aibi-providers.json" "$APP_BUNDLE/Contents/Resources/"
 # 화면 번역문 글꼴(고딕/명조/손글씨, 패키지 번들). 앱 실행 중 프로세스 범위로만 등록하며 시스템에 설치하지 않는다.
 mkdir -p "$APP_BUNDLE/Contents/Resources/Fonts"
-cp "$ROOT_DIR/Resources/Fonts"/*.ttf "$ROOT_DIR/Resources/Fonts"/*-OFL.txt "$APP_BUNDLE/Contents/Resources/Fonts/"
+cp "$ROOT_DIR/Resources/Fonts"/*.ttf "$ROOT_DIR/Resources/Fonts"/*-OFL.txt "$ROOT_DIR/Resources/Fonts"/*-LICENSE.txt "$APP_BUNDLE/Contents/Resources/Fonts/"
 ditto "$SPARKLE_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
 PLIST="$APP_BUNDLE/Contents/Info.plist"

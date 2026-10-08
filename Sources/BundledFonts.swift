@@ -2,22 +2,23 @@ import AppKit
 import CoreText
 
 /// 번역문 글꼴 갈래(화면 번역·브라우저 이미지 OCR 공용 개념). 자동은 원본 글자 획 특징으로 고르고,
-/// 셋 중 하나를 고르면 항상 그 글꼴을 쓴다(정확한 글꼴 식별이 아닌 거친 추정 + 수동 전환).
+/// 수동 글꼴 중 하나를 고르면 항상 그 글꼴을 쓴다(정확한 글꼴 식별이 아닌 거친 추정 + 수동 전환).
 enum FontStyle: String, CaseIterable, Equatable, Hashable {
-    case auto, gothic, myeongjo, hand
+    case auto, gothic, myeongjo, gungseo, hand
 
     static func validated(_ raw: String?) -> FontStyle {
         raw.flatMap(FontStyle.init(rawValue:)) ?? .auto
     }
 }
 
-/// 패키지에 포함한 Nanum 글꼴(OFL)을 앱 프로세스 범위에만 등록한다(시스템 글꼴 목록에 설치하지 않고,
+/// 패키지에 포함한 글꼴(각 배포 라이선스 동봉)을 앱 프로세스 범위에만 등록한다(시스템 글꼴 목록에 설치하지 않고,
 /// 사용자 설치 글꼴에도 의존하지 않는다). 실행 중 한 번만 등록하면 되므로 앱 시작 때 호출한다.
 enum BundledFonts {
     /// (파일 이름, PostScript 이름) — 글꼴 자체는 수정·서브셋하지 않은 원본 그대로 번들에 둔다.
     private static let files: [FontStyle: (file: String, postScriptName: String)] = [
         .gothic: ("NanumGothic-Regular", "NanumGothic"),
         .myeongjo: ("NanumMyeongjo-Regular", "NanumMyeongjo"),
+        .gungseo: ("ChosunGs", "ChosunGs"),
         .hand: ("NanumPenScript-Regular", "NanumPen-Regular")
     ]
 

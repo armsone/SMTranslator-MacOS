@@ -14,10 +14,7 @@
   </header>
 
   <section id="consent" hidden>
-    <p>번역할 때 이 페이지의 글자와 보이는 탭 화면(이미지 글자 인식용)을 이 Mac의 SMT 앱으로 보냅니다.
-      기본값인 Mac 기본 번역은 기기 안에서 번역하고 내용을 저장하지 않으며 외부 AI로 보내지 않습니다.
-      Chrome·Whale에서 '번역 엔진'으로 DeepL·Google 번역·Papago를 따로 고르고 그 엔진에 동의한 경우에만,
-      SMT가 페이지 글자(이미지는 Mac에서 인식한 글자만)를 그 서비스의 공식 웹페이지로 보냅니다.</p>
+    <p>페이지 글자와 보이는 탭 화면을 이 Mac의 SMT 앱으로 보내 번역합니다.</p>
     <button id="agree" class="primary">동의하고 사용</button>
   </section>
 
@@ -34,12 +31,9 @@
         <a class="help" href="https://support.apple.com/ko-kr/guide/mac-help/mchldd8b3c15/mac" target="_blank" rel="noopener noreferrer" title="언어 팩 관리 안내">언어 팩 관리 안내</a>
       </span>
     </label>
-    <label class="row">번역 엔진
+    <label class="row" hidden>번역 엔진
       <select id="engineSelect">
         <option value="apple">Mac 기본 번역(기기 내)</option>
-        <option value="deepl">DeepL 웹 · 외부 전송</option>
-        <option value="google">Google 번역 웹 · 외부 전송</option>
-        <option value="papago">Papago 웹 · 외부 전송</option>
       </select>
     </label>
     <section id="engineConsent" class="engineConsent" hidden>
@@ -62,9 +56,10 @@
           <option value="auto">자동(기본)</option>
           <option value="gothic">고딕</option>
           <option value="myeongjo">명조</option>
+          <option value="gungseo">궁서</option>
           <option value="hand">손글씨</option>
         </select>
-        <span class="help" title="자동은 원본 글자 획의 두께·규칙성을 가볍게 보고 고릅니다. 정확한 글꼴 식별은 아니며, 애매하면 고딕을 씁니다. 손글씨는 같은 크기에서도 획이 가늘어 보이는 만큼 자동으로 보정해 키웁니다.">?</span>
+        <span class="help" title="자동은 원본 글자 모양으로 추정하며, 애매하면 고딕을 씁니다.">?</span>
       </span>
     </label>
   </section>
