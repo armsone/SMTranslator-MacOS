@@ -1,5 +1,10 @@
 # 화면 번역기 (ScreenTranslator) v0.1.0
 
+- **소스**: [github.com/armsone/ScreenTranslator-MacOS](https://github.com/armsone/ScreenTranslator-MacOS) (공개)
+- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/ScreenTranslator-MacOS-Updates/releases/latest)
+  — Developer ID 서명 및 Apple 공증(notarization)을 거친 Apple Silicon(arm64) 전용 빌드입니다.
+- **요구 사항**: macOS 15 이상, Apple Silicon(arm64) Mac. Intel(x86_64)은 지원하지 않습니다.
+
 macOS 15 이상용 네이티브 앱입니다. 화면 위에 투명한 사각형 창 하나를 띄워 두고, 주 버튼을
 누를 때마다 **한 번** 그 안을 캡처해 텍스트를 인식(Vision OCR)하고 Apple Translation으로
 온디바이스 번역한 뒤, **번역문을 원문 줄이 있던 바로 그 위치에** 겹쳐 보여줍니다.
@@ -60,7 +65,8 @@ macOS 15 이상용 네이티브 앱입니다. 화면 위에 투명한 사각형 
 - 빌드 시 `Resources/UpdatePublicKey.txt`(EdDSA **공개키**)를 `SUPublicEDKey`로 넣습니다. 공개키나 HTTPS 피드가 없으면
   업데이터를 시작하지 않고 메뉴에 이유를 표시합니다. 개인키는 저장소에 없으며 로그인 키체인에만 있습니다.
 - 피드가 아직 게시되지 않았거나(404 등) 받을 수 없으면 `업데이트 없음`이 아니라 Sparkle 오류로 표시됩니다.
-- **피드/릴리스 게시는 아직 하지 않았습니다(TM 단계, 사용자 최종 승인 필요). 업데이트 종단 간 동작은 검증되지 않았습니다.**
+- v0.1.0 릴리스가 업데이트 저장소([ScreenTranslator-MacOS-Updates](https://github.com/armsone/ScreenTranslator-MacOS-Updates/releases/latest))에
+  게시되었습니다. 다만 자동 업데이트의 실제 버전 교체 동작은 아직 사용자 확인 전이며, 검증되었다고 단정하지 않습니다.
 
 ### 업데이트 배포 절차 (TM)
 
@@ -68,6 +74,8 @@ macOS 15 이상용 네이티브 앱입니다. 화면 위에 투명한 사각형 
 2. `scripts/package-update.sh` 실행 (선택: `NOTARY_PROFILE=<notarytool 프로필>`로 공증·staple).
    - 서명 키 계정은 `Resources/UpdateSigningAccount.txt`(또는 `SPARKLE_KEYCHAIN_ACCOUNT`)에서 읽으며,
      `generate_appcast --account`가 키체인에서 직접 서명합니다. 키를 내보내거나 출력하지 않습니다.
+   - 기존에 등록해 둔 notarytool 프로필이 있으면 `NOTARY_PROFILE=ccmb-notary scripts/package-update.sh`로
+     그대로 재사용할 수 있습니다(프로필 이름만 지정하는 것이며 별도의 비밀 값을 노출하지 않습니다).
 3. `build/release/v<버전>/`의 DMG와 `appcast.xml`을 업데이트 저장소 릴리스 `v<버전>` 자산으로 올리고
    그 릴리스를 latest로 지정합니다.
 
