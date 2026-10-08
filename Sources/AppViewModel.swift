@@ -231,6 +231,9 @@ final class AppViewModel: ObservableObject {
         generation += 1
         currentCaptureTask?.cancel()
         currentCaptureTask = nil
+        // 외부 AI(AIBIRunner) 작업도 즉시 취소한다. AIBIRunner.currentPrompt는 이동 뒤에도 캐시된
+        // prompt를 재검증 없이 돌려줄 수 있으므로, Task.isCancelled 가드가 submit을 막게 해야 한다.
+        externalTask?.cancel()
         externalStatusTimer?.invalidate()
         externalStatusTimer = nil
         pendingJob = nil
@@ -559,10 +562,24 @@ final class AppViewModel: ObservableObject {
         }
         let next = groupQueue.removeFirst()
         status = .translating(done: receivedLineIDs.count, total: currentLines.count, skipped: skippedLineIDs.count)
-        // 이전 채널은 닫아 둔다. 새 .translationTask 클로저가 시작되면서 채널을 연다.
+        // 직전 묶음과 같은 언어(config == next.config)이고 그 .translationTask의 채널이 아직 살아 있으면
+        // Configuration이 바뀌지 않아 .translationTask가 재시작되지 않는다(새 consumer가 열리지 않음).
+        // 이 경우 채널을 닫지 않고 기존 소비자에 그대로 제출해 재사용한다.
+        if translationConfiguration == next.config, jobContinuation != nil {
+            submit(TranslationJob(generation: generation, batches: [next.requests]))
+            return
+        }
+        // 언어가 실제로 바뀌었거나 채널이 이미 죽은 경우에만 명시적으로 무효화한다.
         jobContinuation?.finish()
         jobContinuation = nil
-        translationConfiguration = next.config
+        if var config = translationConfiguration, config == next.config {
+            // Configuration 값이 같아 보여도(채널은 죽어 있음) 그대로 대입하면 .translationTask가
+            // 재시작을 건너뛸 수 있으므로, invalidate()로 값을 확실히 바꿔 새 .translationTask(새 consumer)를 강제로 연다.
+            config.invalidate()
+            translationConfiguration = config
+        } else {
+            translationConfiguration = next.config
+        }
         submit(TranslationJob(generation: generation, batches: [next.requests]))
     }
 

@@ -1,7 +1,7 @@
-# 스크린 메일 번역기 (SMTranslator) v0.3.1
+# 스크린 메일 번역기 (SMTranslator) v0.3.2
 
-- **소스**: [github.com/armsone/ScreenTranslator-MacOS](https://github.com/armsone/ScreenTranslator-MacOS) (공개)
-- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/ScreenTranslator-MacOS-Updates/releases/latest)
+- **소스**: [github.com/armsone/SMTranslator-MacOS](https://github.com/armsone/SMTranslator-MacOS) (공개)
+- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/SMTranslator-MacOS/releases/latest)
   — Developer ID 서명 및 Apple 공증(notarization)을 거친 Apple Silicon(arm64) 전용 빌드입니다.
 - **요구 사항**: macOS 15 이상, Apple Silicon(arm64) Mac. Intel(x86_64)은 지원하지 않습니다.
 
@@ -223,12 +223,12 @@ macOS 15 이상용 네이티브 앱입니다. 하나의 앱 안에 두 기능이
 - 표준 `SPUStandardUpdaterController` 사용. 기본값: `SUEnableAutomaticChecks=YES`, `SUAutomaticallyUpdate=YES`,
   `SUVerifyUpdateBeforeExtraction=YES`, 시스템 프로파일링 끔. 메뉴에서 자동 업데이트를 끌 수 있습니다.
 - 피드: `update-config.env`의 `SPARKLE_FEED_URL`
-  (`https://github.com/armsone/ScreenTranslator-MacOS-Updates/releases/latest/download/appcast.xml`).
+  (`https://github.com/armsone/SMTranslator-MacOS/releases/latest/download/appcast.xml`).
 - 빌드 시 `Resources/UpdatePublicKey.txt`(EdDSA **공개키**)를 `SUPublicEDKey`로 넣습니다. 공개키나 HTTPS 피드가 없으면
   업데이터를 시작하지 않고 메뉴에 이유를 표시합니다. 개인키는 저장소에 없으며 로그인 키체인에만 있습니다.
 - 피드가 아직 게시되지 않았거나(404 등) 받을 수 없으면 `업데이트 없음`이 아니라 Sparkle 오류로 표시됩니다.
-- 업데이트 저장소([ScreenTranslator-MacOS-Updates](https://github.com/armsone/ScreenTranslator-MacOS-Updates/releases/latest))에
-  공개된 최신 버전은 v0.3.1(이 문서의 버전: 화면 번역 UI 정리, 원문보기 = 실제 화면,
+- [SMTranslator-MacOS](https://github.com/armsone/SMTranslator-MacOS/releases/latest) 저장소(소스·릴리스·피드 통합)에
+  공개된 최신 버전은 v0.3.2(이 문서의 버전: 화면 번역 UI 정리, 원문보기 = 실제 화면,
   창·읽기 영역 맞추기, 원문 자동 인식 및 미판별 글 건너뛰기)입니다.
   자동 업데이트의 실제 버전 교체 동작은 아직 사용자 확인 전이며, 검증되었다고 단정하지 않습니다.
 
