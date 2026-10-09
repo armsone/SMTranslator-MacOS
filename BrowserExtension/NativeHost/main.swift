@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import Darwin
 import Foundation
 
@@ -70,23 +71,46 @@ guard let teamID = BrowserCodeSigning.ownTeamID() else {
     fail("unsigned_helper", "SMT 브라우저 도우미가 Developer ID로 서명되지 않았습니다. 서명된 SMT를 다시 설치하세요.")
 }
 
+/// 앱 본체에 "리스너 상태를 다시 확인해 달라"는 신호만 보낸다(데이터 없음). 앱은 이 신호 내용을 그대로
+/// 믿지 않고 자신의 리스너가 실제로 죽어 있을 때만 되살리며, 이미 접속된 다른 브라우저·탭의 연결에는 손대지 않는다.
+let recoveryNotificationName = "com.local.screentranslator.browser.recover" as CFString
+func requestListenerRecovery() {
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                          CFNotificationName(recoveryNotificationName), nil, nil, true)
+}
+
 // 2) 엔진 연결 — 없으면 SMT를 백그라운드로 실행하고 잠시 기다린다.
 var engineFD = connectEngine()
 if engineFD == nil {
     if !NSRunningApplication.runningApplications(withBundleIdentifier: BrowserBridge.appBundleID).isEmpty {
-        fail("app_disabled", "SMT가 실행 중이지만 브라우저 연결이 꺼져 있습니다. SMT 메뉴 막대 › 브라우저 번역…에서 '브라우저 확장 연결 허용'을 켜세요.")
-    }
-    guard launchContainingApp() else {
-        fail("app_not_found", "SMT 앱을 실행하지 못했습니다. SMT를 응용 프로그램 폴더에 설치하고 '브라우저 번역…'에서 다시 준비하세요.")
-    }
-    let deadline = Date().addingTimeInterval(12)
-    while engineFD == nil, Date() < deadline {
-        usleep(250_000)
-        engineFD = connectEngine()
+        // 앱은 떠 있지만 소켓이 없다(리스너가 멈췄거나 아직 열리지 않음). 포기하지 않고 앱에 리스너 복구를
+        // 요청하며 짧게 백오프하며 다시 연결해 본다(횟수 상한 있음 — 무한 재시도·요청 중복 없음).
+        var attempt = 0
+        let maxAttempts = 4
+        var delay: UInt32 = 200_000
+        while engineFD == nil, attempt < maxAttempts {
+            requestListenerRecovery()
+            usleep(delay)
+            engineFD = connectEngine()
+            attempt += 1
+            delay = min(delay * 2, 1_000_000)
+        }
+        if engineFD == nil {
+            fail("engine_unavailable", "SMT가 실행 중이지만 브라우저 연결을 열지 못했습니다. 잠시 후 다시 시도하거나 SMT를 다시 시작하세요.")
+        }
+    } else {
+        guard launchContainingApp() else {
+            fail("app_not_found", "SMT 앱을 실행하지 못했습니다. SMT를 응용 프로그램 폴더에 설치하고 '브라우저 번역…'에서 다시 준비하세요.")
+        }
+        let deadline = Date().addingTimeInterval(12)
+        while engineFD == nil, Date() < deadline {
+            usleep(250_000)
+            engineFD = connectEngine()
+        }
     }
 }
 guard let engine = engineFD else {
-    fail("app_not_responding", "SMT 브라우저 엔진이 응답하지 않습니다. SMT를 직접 실행하고 '브라우저 번역…'에서 연결 허용을 켰는지 확인하세요.")
+    fail("app_not_responding", "SMT 브라우저 연결을 복구하지 못했습니다. SMT 설정의 브라우저 번역에서 새로고침을 누른 뒤 다시 시도하세요.")
 }
 
 // 3) 엔진 신원 확인 — 같은 사용자 + 같은 팀으로 서명된 SMT 앱인지

@@ -60,6 +60,27 @@
     aiRefine: false
   };
 
+  // pageGen(세대) → 그 세대에서 띄워 보낸(아직 끝나지 않은) 다듬기(refine) 요청 수. runPass가 끝난 뒤에도 다듬기가
+  // 이어지는 동안 팝업 스피너를 계속 띄우기 위해 쓴다. 세대가 지난 다듬기는 끝나도 지금 세대 카운트를 건드리지 않는다.
+  const refinePending = new Map();
+
+  function beginRefine(pageGen) {
+    refinePending.set(pageGen, (refinePending.get(pageGen) || 0) + 1);
+    reportProgress();
+  }
+
+  function endRefine(pageGen) {
+    const next = (refinePending.get(pageGen) || 0) - 1;
+    if (next <= 0) refinePending.delete(pageGen);
+    else refinePending.set(pageGen, next);
+    reportProgress();
+  }
+
+  /** 지금 실제로 번역·OCR·다듬기 중인지(단순 자동 감시 대기는 포함 안 함). 팝업 스피너·배지가 이 값만 본다. */
+  function isBusy() {
+    return state.running || (refinePending.get(state.pageGen) || 0) > 0;
+  }
+
   /** Text 노드 → { original, translated(null이면 원문 유지), target(엔진|언어), lang(판별 언어 코드|"unknown"|null(글자없음)|생략(구버전 응답)) } */
   const records = new Map();
   /** `${엔진|언어}\u0001${원문}` → 번역문(null이면 번역하지 않음). 메모리 LRU */
@@ -104,6 +125,7 @@
       if (!node.isConnected) continue;
       if (record.translated !== null && node.nodeValue === record.translated) node.nodeValue = record.original;
     }
+    for (const node of Array.from(fontSpans.keys())) removeFontSpan(node);
     clearImageOverlays();
     records.clear();
     cache.clear();
@@ -193,9 +215,12 @@
 
   const FONT_FILES = { gothic: "fonts/NanumGothic-Regular.ttf", myeongjo: "fonts/NanumMyeongjo-Regular.ttf", gungseo: "fonts/ChosunGs.ttf", hand: "fonts/NanumPenScript-Regular.ttf" };
   const FONT_FAMILIES = { gothic: "SMTNanumGothic", myeongjo: "SMTNanumMyeongjo", gungseo: "SMTChosunGungseo", hand: "SMTNanumPen" };
+  // 번들 글꼴(FontFace)이 아직 못 불러와졌을 때만 잠깐 쓰이는 대체 글꼴. 명조에 고딕 계열 글꼴(Apple SD Gothic
+  // Neo)을 폴백으로 뒀던 이전 버그는 로딩이 늦어지면 "명조"를 골라도 고딕처럼 보이게 했다. 모든 갈래의 폴백은
+  // 번들 글꼴과 같은 계열(세리프/산세리프/필기체)이어야 한다.
   const FONT_FALLBACKS = {
     gothic: "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
-    myeongjo: "'Apple SD Gothic Neo',serif",
+    myeongjo: "serif",
     gungseo: "serif",
     hand: "cursive"
   };
@@ -237,19 +262,73 @@
     return scale;
   }
 
-  /** 패키지에 포함한 글꼴 파일을 FontFace API로 한 번만 불러와 document.fonts에 더한다(온라인 요청 없음). */
+  /** 패키지에 포함한 글꼴 파일을 FontFace API로 한 번만 불러와 document.fonts에 더한다(온라인 요청 없음).
+   *  불러오기에 실패하면 캐시에 남기지 않는다: 일시적 오류(확장 업데이트 중 리소스 접근 실패 등)로 한 번
+   *  실패했다고 그 글꼴을 이 페이지 생애 동안 영영 못 쓰는 것으로 단정하지 않고, 다음 요청에서 다시 시도한다. */
   function loadBundledFont(style) {
-    if (style === "auto") return Promise.resolve();
-    if (fontLoadPromises.has(style)) return fontLoadPromises.get(style);
+    if (style === "auto") return Promise.resolve(true);
+    const cached = fontLoadPromises.get(style);
+    if (cached) return cached;
     const family = FONT_FAMILIES[style];
     const file = FONT_FILES[style];
-    if (!family || !file) return Promise.resolve();
+    if (!family || !file) return Promise.resolve(false);
     const promise = Promise.resolve()
       .then(() => new FontFace(family, `url(${api.runtime.getURL(file)})`).load())
       .then((loaded) => { document.fonts.add(loaded); return true; })
-      .catch(() => false);
+      .catch(() => { fontLoadPromises.delete(style); return false; });
     fontLoadPromises.set(style, promise);
     return promise;
+  }
+
+  // MARK: 일반 DOM 번역문에 선택한 글꼴 적용 — 번역된 글자만(상위 요소·아이콘·컨트롤은 그대로) 작은 인라인
+  // <span>으로 감싸 font-family만 준다. 텍스트 노드 자신·그 nodeValue는 번역 로직이 그대로 쓰므로(원문 복원 등)
+  // 감시자(observer)가 보는 건 이 span 추가/제거뿐이며, 같은 노드에 두 번 감싸지 않아 되돌이 반복을 만들지 않는다.
+  const FONT_SPAN_CLASS = "smt-translator-font";
+  const fontSpans = new Map(); // Text 노드 → 감싼 span
+
+  function ensureFontSpan(node) {
+    let span = fontSpans.get(node);
+    if (span && span.isConnected && span.parentNode && node.parentNode === span) return span;
+    if (span) fontSpans.delete(node);
+    const parent = node.parentNode;
+    if (!parent) return null;
+    span = document.createElement("span");
+    span.className = FONT_SPAN_CLASS;
+    span.style.cssText = "all: unset; display: inline; unicode-bidi: isolate;";
+    parent.insertBefore(span, node);
+    span.appendChild(node);
+    fontSpans.set(node, span);
+    return span;
+  }
+
+  function removeFontSpan(node) {
+    const span = fontSpans.get(node);
+    if (!span) return;
+    fontSpans.delete(node);
+    if (span.parentNode && node.parentNode === span) span.parentNode.insertBefore(node, span);
+    if (span.parentNode) span.remove();
+  }
+
+  /** 번역된 텍스트 노드 하나에 선택한 글꼴을 적용(또는 자동이면 원래 글꼴로 되돌림)한다. */
+  function applyNodeFont(node, style) {
+    if (style === "auto" || !FONT_STYLES.includes(style)) {
+      removeFontSpan(node);
+      return;
+    }
+    if (!node.isConnected) return;
+    const span = ensureFontSpan(node);
+    if (!span) return;
+    span.style.fontFamily = fontFamilyFor(style);
+    loadBundledFont(style).catch(() => {});
+  }
+
+  /** 글꼴 설정이 바뀌었을 때 이미 번역되어 보이는 텍스트 노드만 재캡처·재번역 없이 다시 글꼴을 입힌다. */
+  function rerenderTextFonts() {
+    for (const [node, record] of records) {
+      if (!node.isConnected || record.translated === null) continue;
+      if (state.view !== "translated" || node.nodeValue !== record.translated) continue;
+      applyNodeFont(node, state.fontStyle);
+    }
   }
 
   /** 자동 글꼴일 때 원본 글자 특징(item.fs)으로 고른 갈래, 수동이면 사용자가 고른 갈래로 확정한다. 알 수 없는
@@ -367,9 +446,13 @@
 
   function pruneRecords() {
     for (const node of records.keys()) {
-      if (!node.isConnected) records.delete(node);
+      if (!node.isConnected) { records.delete(node); removeFontSpan(node); }
     }
-    while (records.size > RECORD_LIMIT) records.delete(records.keys().next().value);
+    while (records.size > RECORD_LIMIT) {
+      const node = records.keys().next().value;
+      records.delete(node);
+      removeFontSpan(node);
+    }
   }
 
   function applyUnit(unit, translatedTrimmed, lang) {
@@ -382,6 +465,8 @@
     records.set(unit.node, record);
     const want = state.view === "translated" && translated !== null ? translated : unit.source;
     if (unit.node.nodeValue !== want) unit.node.nodeValue = want;
+    if (state.view === "translated" && translated !== null) applyNodeFont(unit.node, state.fontStyle);
+    else removeFontSpan(unit.node);
   }
 
   async function translateTextPass(pageGen) {
@@ -433,7 +518,8 @@
       });
     }
     if (!isExternal() && state.aiRefine && refineCandidates.length) {
-      refineTextCandidates(refineCandidates, pageGen).catch(() => {});
+      beginRefine(pageGen);
+      refineTextCandidates(refineCandidates, pageGen).catch(() => {}).finally(() => endRefine(pageGen));
     }
   }
 
@@ -950,7 +1036,8 @@
         await renderImage(candidate, image.items, image.langs, isExternal() ? null : imageRefineCandidates);
       }
       if (!isExternal() && state.aiRefine && imageRefineCandidates.length) {
-        refineImageCandidates(imageRefineCandidates, pageGen, scrollGen).catch(() => {});
+        beginRefine(pageGen);
+        refineImageCandidates(imageRefineCandidates, pageGen, scrollGen).catch(() => {}).finally(() => endRefine(pageGen));
       }
     } finally {
       ocrInFlight = false;
@@ -988,6 +1075,7 @@
     if (document.visibilityState !== "visible") return;
     checkNavigation();
     state.running = true;
+    reportProgress();
     state.error = "";
     const pageGen = state.pageGen;
     try {
@@ -1011,6 +1099,7 @@
       }
     } finally {
       state.running = false;
+      reportProgress();
       if (state.rerun) {
         const manualRerun = state.rerunManual;
         state.rerun = false;
@@ -1037,15 +1126,19 @@
     for (const [node, record] of records) {
       if (!node.isConnected) {
         records.delete(node);
+        removeFontSpan(node);
         continue;
       }
       if (record.translated === null) continue;
       const from = view === "translated" ? record.original : record.translated;
       const to = view === "translated" ? record.translated : record.original;
       if (node.nodeValue === from) node.nodeValue = to;
+      if (view === "translated") applyNodeFont(node, state.fontStyle);
+      else removeFontSpan(node);
     }
     applyLayerVisibility();
     setStatus(view === "translated" ? "번역 표시" : "원문 표시");
+    reportProgress();
   }
 
   // MARK: 변경 감시(자동 번역일 때만) — 자기 변경은 걸러 무한 반복을 막는다.
@@ -1221,8 +1314,20 @@
       ok: true, view: state.view, auto: state.auto, images: state.images, target: state.target, engine: state.engine,
       fontStyle: state.fontStyle,
       status: state.status, error: state.error, warning: state.warning, translated, imageCount: imageRecords.size,
-      langCounts: hasLangData ? langCounts : null
+      langCounts: hasLangData ? langCounts : null,
+      // 실제로 번역·OCR·다듬기 패스가 진행 중인지(단순 자동 감시 대기는 포함 안 함). 팝업 스피너가 이 값만 본다.
+      running: isBusy()
     };
+  }
+
+  /** 진행 상태(실행 중 여부·보기)를 배경에 알려 툴바 아이콘·배지를 갱신한다(팝업이 닫혀 있어도 반영됨).
+   *  응답을 기다리지 않고, 실패(컨텍스트 무효화 등)는 조용히 무시한다. */
+  function reportProgress() {
+    if (contextDead) return;
+    try {
+      const result = api.runtime.sendMessage({ cmd: "progress", running: isBusy(), view: state.view });
+      if (result && typeof result.catch === "function") result.catch(() => {});
+    } catch { /* 확장 컨텍스트 무효화 등 — 조용히 무시 */ }
   }
 
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1243,6 +1348,7 @@
         if (fontStyleChanged) {
           state.fontStyle = message.fontStyle;
           rerenderImageFonts(); // 재캡처·재번역 없이 이미 그려진 이미지 덮개만 새 글꼴로 다시 그린다
+          rerenderTextFonts(); // 재번역 없이 이미 보이는 번역 텍스트 노드만 새 글꼴로 다시 입힌다
         }
         if (targetChanged || engineChanged) {
           if (targetChanged) state.target = message.target;

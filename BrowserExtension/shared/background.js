@@ -30,6 +30,10 @@ const EXTERNAL_ENGINES = [];
 const CAPTURE_MIN_INTERVAL = 700; // Chrome captureVisibleTab 호출 빈도 제한(초당 2회) 아래로 유지
 const CAPTURE_TTL = 15000;
 const FONT_STYLES = ["auto", "gothic", "myeongjo", "gungseo", "hand"];
+const ICON_SIZES = [16, 32];
+// 오렌지(원문 보기)·파랑(번역, 번들 원본 그대로)은 같은 그림을 색만 바꾼 것이다(새 디자인이 아니라 기존
+// 아이콘의 색조만 회전). hue는 0~1 비율(표준 주황 약 30°).
+const ORANGE_HUE = 30 / 360;
 const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [],
                    fontStyle: "auto" };
 
@@ -266,8 +270,127 @@ const native = {
         : [],
       aiRefine: response.aiRefine === true
     };
+  },
+
+  /** 팝업 "언어팩" 버튼: SMT가 실제 다운로드 화면을 열게 한다. Safari처럼 이 확장이 직접 그 화면을 열 수 없을 때는
+   *  응답에 안내 문구(message)가 실려 온다(창을 바로 열었을 때는 없음). */
+  async openLanguagePack() {
+    const response = await this.request({ v: 1, type: "openLanguagePack", id: this.nextId("lp") }, { timeout: TIMEOUT.hello });
+    return typeof response.message === "string" ? response.message : null;
   }
 };
+
+// MARK: - 툴바 아이콘·배지(원문 보기=오렌지, 번역 보기=기존 파랑, 처리 중=배지만) + 팝업 진행 스피너용 탭 상태
+//
+// action.setIcon은 로컬 경로 또는 미리 만든 ImageData를 받는다(공식 문서: 애니메이션 아이콘은 권장하지 않음).
+// 그래서 여기서는 아이콘 색을 한 번만(탭당 상태가 바뀔 때만) 바꾸고, 실제 "처리 중" 표시는 배지 텍스트와
+// 팝업 안의 회전 스피너로만 한다(타이머로 반복 setIcon 하지 않음).
+// 오렌지 변형은 번들 아이콘 자체의 색조(hue)만 돌려 만든다(채도·명도는 그대로 둬 음영·외곽선을 보존) —
+// 새 그림을 생성하지 않고 지금 아이콘을 그대로 알아볼 수 있게 한다.
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hue = (t) => {
+    let tt = t;
+    if (tt < 0) tt += 1;
+    if (tt > 1) tt -= 1;
+    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+    if (tt < 1 / 2) return q;
+    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+    return p;
+  };
+  return [Math.round(hue(h + 1 / 3) * 255), Math.round(hue(h) * 255), Math.round(hue(h - 1 / 3) * 255)];
+}
+
+/** imageData를 제자리에서 오렌지 색조로 돌린다. 채도·명도·투명도는 그대로 둔다(모양·세부는 그대로). */
+function tintToOrange(imageData) {
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    const [, s, l] = rgbToHsl(data[i], data[i + 1], data[i + 2]);
+    const [r, g, b] = hslToRgb(ORANGE_HUE, s, l);
+    data[i] = r; data[i + 1] = g; data[i + 2] = b;
+  }
+  return imageData;
+}
+
+async function loadIconImageData(path, size) {
+  const response = await fetch(api.runtime.getURL(path));
+  const bitmap = await createImageBitmap(await response.blob());
+  const canvas = new OffscreenCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, size, size);
+  return ctx.getImageData(0, 0, size, size);
+}
+
+/** 16/32 두 크기의 파랑(원본)·오렌지(색조 회전) ImageData를 한 번만 만들어 둔다. OffscreenCanvas·
+ *  createImageBitmap·action.setIcon 중 하나라도 없으면(구버전 Safari 등) null — 그 경우 토글 아이콘 색은
+ *  바뀌지 않고 팝업 스피너·상태만으로 안내한다(기능이 조용히 깨지지 않는다). */
+const iconReady = (async () => {
+  try {
+    if (typeof OffscreenCanvas !== "function" || typeof createImageBitmap !== "function" ||
+        typeof api.action?.setIcon !== "function") return null;
+    const blue = {};
+    const orange = {};
+    for (const size of ICON_SIZES) {
+      const base = await loadIconImageData(`icons/icon${size}.png`, size);
+      blue[size] = base;
+      orange[size] = tintToOrange(new ImageData(new Uint8ClampedArray(base.data), base.width, base.height));
+    }
+    return { blue, orange };
+  } catch {
+    return null;
+  }
+})();
+
+const tabProgress = new Map(); // tabId → { view: "translated"|"original", running: boolean }
+
+/** 탭 하나의 툴바 아이콘·배지·툴팁을 실제 상태에 맞춘다. 탭이 이미 닫혀 사라졌으면 조용히 무시한다. */
+async function updateTabIcon(tabId) {
+  const info = tabProgress.get(tabId) || { view: "translated", running: false };
+  const icons = await iconReady;
+  if (icons) {
+    const variant = info.view === "original" ? icons.orange : icons.blue;
+    try { await api.action.setIcon({ tabId, imageData: variant }); } catch { /* 탭이 닫혔을 수 있음 */ }
+  }
+  if (typeof api.action?.setBadgeText === "function") {
+    try {
+      await api.action.setBadgeText({ tabId, text: info.running ? "···" : "" });
+      if (info.running && typeof api.action.setBadgeBackgroundColor === "function") {
+        await api.action.setBadgeBackgroundColor({ tabId, color: "#FF8A00" });
+      }
+    } catch { /* 무시 */ }
+  }
+  if (typeof api.action?.setTitle === "function") {
+    const title = info.running ? "SMT 웹 번역 — 번역 중…" : "SMT 웹 번역";
+    try { await api.action.setTitle({ tabId, title }); } catch { /* 무시 */ }
+  }
+}
+
+/** 내용 스크립트가 보낸 진행 상태(실행 중 여부·원문/번역 보기)를 반영한다. 보낸 탭 것만 보고, 숫자가
+ *  아닌 탭 ID는 무시한다(가짜 tabId 방어). 팝업이 닫혀 있어도 이 경로로 툴바가 갱신된다. */
+function handleProgress(message, sender) {
+  const tabId = sender.tab?.id;
+  if (!Number.isInteger(tabId)) return;
+  tabProgress.set(tabId, { view: message.view === "original" ? "original" : "translated", running: message.running === true });
+  updateTabIcon(tabId).catch(() => {});
+}
 
 // MARK: - 보이는 탭 캡처(메모리에만 잠깐 보관, 탭당 최신 1장)
 
@@ -560,7 +683,7 @@ function configureMessage(settings, epoch, extra = {}) {
     auto: settings.automaticEnabled === true,
     target: settings.target,
     engine: settings.engine,
-    images: settings.images,
+    images: true, // 이미지 속 글자 번역은 항상 켜져 있다(옵션 아님, 옛 저장값이 꺼짐이어도 무시한다).
     fontStyle: settings.fontStyle,
     ...extra
   };
@@ -686,6 +809,11 @@ async function handlePopup(message) {
       await api.storage.local.set({ consent: true });
       return { ok: true };
     }
+    case "openLanguagePack": {
+      if (!settings.consent) throw codedError("consent_required", "먼저 동의해 주세요.");
+      const message = await native.openLanguagePack();
+      return { ok: true, message };
+    }
     case "setTarget": {
       if (!TARGETS.includes(message.target)) throw codedError("bad_request", "지원하지 않는 언어입니다.");
       await api.storage.local.set({ target: message.target });
@@ -714,10 +842,6 @@ async function handlePopup(message) {
       native.cancelAllTabs();
       return { ok: true, page: await reconfigure(tabId, origin) };
     }
-    case "setImages": {
-      await api.storage.local.set({ images: message.enabled === true });
-      return { ok: true, page: await reconfigure(tabId, origin) };
-    }
     case "setFontStyle": {
       if (!FONT_STYLES.includes(message.fontStyle)) throw codedError("bad_request", "지원하지 않는 글꼴입니다.");
       await api.storage.local.set({ fontStyle: message.fontStyle });
@@ -738,6 +862,10 @@ async function handlePopup(message) {
           await api.storage.local.set({ automaticEnabled: true });
           return "auto";
         }
+        // tabOnly(팝업 열 때 한 번 토글)는 이 탭 하나만 수동으로 번역하려는 뜻이라, 전역 자동 번역이 이미
+        // 켜져 있어도(다른 탭들은 계속 자동) 그걸 끄지 않는다. 버튼으로 직접 누른 보통 번역 요청만 기존대로
+        // 전역 자동 번역이 켜져 있으면 끈다(거절 뒤 이 페이지만 한 번 번역하는 의도된 동작).
+        if (message.tabOnly === true) return "manual";
         return (await loadSettings()).automaticEnabled ? "stop" : "manual";
       });
       if (outcome === "superseded") return { ok: true, page: null, automatic: false, superseded: true };
@@ -786,6 +914,10 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.tab) {
     // 내용 스크립트는 최상위 프레임에만 넣는다.
     if (typeof sender.frameId === "number" && sender.frameId !== 0) return false;
+    if (message.cmd === "progress") {
+      handleProgress(message, sender);
+      return false; // 응답 없음(배경 전용 신호)
+    }
     return reply(handleContent(message, sender));
   }
   const extensionBase = api.runtime.getURL("");
@@ -801,6 +933,10 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status === "loading") {
     captures.delete(tabId);
     native.cancelTab(tabId);
+    // 새로 불러오는 페이지는 아직 번역한 적이 없으므로 이전 페이지의 아이콘·배지(오렌지·처리 중 표시 등)가
+    // 그대로 남지 않게 기본 상태로 되돌린다(내용 스크립트가 다시 붙을 때까지 기다리지 않음).
+    tabProgress.delete(tabId);
+    updateTabIcon(tabId).catch(() => {});
   }
   if (info.status !== "complete" || !tab?.url || !originOf(tab.url)) return;
   applyAutoToTab(tabId, control.epoch).catch(() => {});
@@ -809,6 +945,16 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
 api.tabs.onRemoved.addListener((tabId) => {
   captures.delete(tabId);
   native.cancelTab(tabId);
+  tabProgress.delete(tabId);
+  // 자동 번역 중이던 번역 창(탭)이 모두 닫히면 자동 번역도 함께 끈다(다음에 새로 여는 탭에서는 다시 켜지지 않음).
+  // 남은 탭이 없는지는 다음 실행 루프에서 확인한다(onRemoved 시점에는 닫히는 탭이 아직 목록에 남아 있을 수 있음).
+  if (!control.armed) return;
+  setTimeout(() => {
+    if (!control.armed) return;
+    api.tabs.query({}).then((tabs) => {
+      if (control.armed && tabs.length === 0) globalStop().catch(() => {});
+    }).catch(() => {});
+  }, 0);
 });
 
 // 탭을 바꿔 들어갈 때, 전역 자동 번역이 유효한데 아직 주입·설정되지 않았으면(예: 켜기 전부터 열려 있던 탭) 이어받는다.

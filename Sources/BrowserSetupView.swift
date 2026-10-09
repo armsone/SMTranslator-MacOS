@@ -1,30 +1,25 @@
-import AppKit
 import SwiftUI
+import Translation
 
 // 브라우저 번역 설정 창: 연결 허용(동의), Chrome·Whale 준비(확장 풀기 + 호스트 등록), Safari 확장 켜기 안내.
 // 확장 로드와 Safari 확장 켜기는 브라우저 화면에서 사용자가 직접 확인해야 한다(앱이 대신 켜지 않는다).
 
 struct BrowserSetupView: View {
     @ObservedObject private var integration = BrowserIntegration.shared
+    @ObservedObject var settingsStore: SettingsSectionStore
 
     var body: some View {
         Form {
             Section {
-                Toggle("브라우저 확장 연결 허용", isOn: Binding(
-                    get: { integration.isEnabled },
-                    set: { integration.setEnabled($0) }
-                ))
-                LabeledContent("엔진 상태", value: integration.serverStatus)
                 HStack {
-                    Text("번역 언어 팩")
                     Spacer()
-                    Button("번역 언어 관리") { openTranslationLanguageSettings() }
+                    Button("새로고침") { integration.recoverConnection() }
                 }
                 if TranslationBackend.externalOptionsVisible {
                     HStack {
                         Text("웹 번역(DeepL·Google·Papago) 전송 동의")
                         Spacer()
-                        Button("설정 열기") { MailWindowCoordinator.shared.showSettings() }
+                        Button("설정 열기") { MailWindowCoordinator.shared.showSettings(section: .general) }
                     }
                 }
             } header: {
@@ -51,6 +46,10 @@ struct BrowserSetupView: View {
                 Text("Safari 번역은 macOS 26 이상과 확장 허용·언어 팩이 필요합니다.")
             }
 
+            Section {
+                Button("언어팩") { settingsStore.showLanguagePackSheet = true }
+            }
+
             if let message = integration.lastMessage {
                 Section {
                     Text(message).textSelection(.enabled)
@@ -63,6 +62,9 @@ struct BrowserSetupView: View {
         .onAppear {
             integration.refreshRegistrations()
             integration.refreshSafariState()
+        }
+        .sheet(isPresented: $settingsStore.showLanguagePackSheet) {
+            LanguagePackDownloadView()
         }
     }
 
@@ -77,7 +79,7 @@ struct BrowserSetupView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(!integration.isEnabled || state == .browserMissing)
+            .disabled(state == .browserMissing)
 
             installSteps(browser)
 
@@ -116,14 +118,6 @@ struct BrowserSetupView: View {
         .padding(.vertical, 4)
     }
 
-    private func openTranslationLanguageSettings() {
-        let settingsURL = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension")!
-        if !NSWorkspace.shared.open(settingsURL) {
-            let guideURL = URL(string: "https://support.apple.com/ko-kr/guide/mac-help/mchldd8b3c15/mac")!
-            NSWorkspace.shared.open(guideURL)
-        }
-    }
-
     private func installStep(_ number: Int, _ symbol: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             ZStack {
@@ -138,29 +132,75 @@ struct BrowserSetupView: View {
     }
 }
 
-@MainActor
-final class BrowserSetupWindowController: NSObject, NSWindowDelegate {
-    static let shared = BrowserSetupWindowController()
+/// 언어팩 다운로드 전용 화면: 원문은 항상 자동 인식되며, 여기서는 받을 번역 언어팩만 고른다
+/// (소스 언어 자동 인식 동작을 바꾸지 않는다). Apple Translation 프레임워크가 언어쌍 단위로만
+/// prepareTranslation()을 제공하므로 쌍을 고르지만, 이는 다운로드 대상 선택일 뿐 원문 인식 제한이 아니다.
+private struct LanguagePackDownloadView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var packSource: AppLanguage = .english
+    @State private var packTarget: AppLanguage = .korean
+    @State private var packConfiguration: TranslationSession.Configuration?
+    @State private var packStatus = ""
 
-    private var window: NSWindow?
-
-    func show() {
-        NSApp.activate()
-        if window == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: BrowserSetupView()))
-            window.title = "브라우저 번역"
-            window.identifier = NSUserInterfaceItemIdentifier("browserSetup")
-            window.styleMask = [.titled, .closable, .miniaturizable]
-            window.isReleasedWhenClosed = false
-            window.tabbingMode = .disallowed
-            window.delegate = self
-            window.center()
-            self.window = window
+    var body: some View {
+        Form {
+            Section {
+                Text("원문은 자동 인식하며, 여기서는 받을 언어팩만 선택합니다.")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Picker("", selection: $packSource) {
+                        ForEach(AppLanguage.allCases) { Text($0.displayNameKorean).tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                    Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                    Picker("", selection: $packTarget) {
+                        ForEach(AppLanguage.allCases) { Text($0.displayNameKorean).tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                    Button("받기") { requestLanguagePackDownload() }
+                }
+                if !packStatus.isEmpty {
+                    Text(packStatus).font(.caption).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("언어팩 다운로드")
+            }
         }
-        window?.makeKeyAndOrderFront(nil)
+        .formStyle(.grouped)
+        .frame(width: 420, height: 220)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("닫기") { dismiss() }
+            }
+        }
+        // 세션이 시작되면 Translation 프레임워크가 그 언어쌍의 팩이 없을 때만 실제 다운로드 시트를 띄운다.
+        // 이미 설치돼 있으면 화면 변화 없이 바로 끝난다(가짜 성공 주장 없음).
+        .translationTask(packConfiguration) { session in
+            do {
+                try await session.prepareTranslation()
+                await MainActor.run { packStatus = "준비 완료: 이 언어쌍은 설치돼 있거나 방금 받았습니다." }
+            } catch {
+                await MainActor.run { packStatus = "언어 팩을 받지 못했습니다: \(error.localizedDescription)" }
+            }
+        }
     }
 
-    func windowWillClose(_ notification: Notification) {
-        BrowserIntegration.shared.lastMessage = nil
+    /// 같은 언어쌍을 다시 눌러도 .translationTask가 재시작되도록(Configuration이 값으로 같으면 SwiftUI가
+    /// 다시 부르지 않는다) invalidate()로 값을 바꾼다. AppViewModel.advanceGroupQueue()와 같은 패턴.
+    private func requestLanguagePackDownload() {
+        guard packSource != packTarget else {
+            packStatus = "원문과 번역 언어가 같습니다. 다른 언어를 골라주세요."
+            return
+        }
+        packStatus = ""
+        let newConfig = TranslationSession.Configuration(source: packSource.localeLanguage, target: packTarget.localeLanguage)
+        if var config = packConfiguration, config == newConfig {
+            config.invalidate()
+            packConfiguration = config
+        } else {
+            packConfiguration = newConfig
+        }
     }
 }

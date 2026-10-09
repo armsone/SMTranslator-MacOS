@@ -18,6 +18,13 @@ final class TranslationPatchesView: NSView {
         didSet { if oldValue != colorSettings { restyleAll() } }
     }
 
+    /// 지금 캡처 영역이 Apple Mail 창을 덮고 있는지. true면 사용자가 고른 번들 글꼴(고딕/명조/궁서/손글씨)이나
+    /// 자동 추정 글꼴을 쓰지 않고 시스템 기본 글꼴만 쓴다(전역 글꼴 설정 자체는 바꾸지 않음. 다른 앱 화면 번역에는
+    /// 영향 없음). 캡처 시작 시 한 번 설정되고 그 캡처가 보이는 동안 유지된다.
+    var isMailTarget = false {
+        didSet { if oldValue != isMailTarget { restyleAll() } }
+    }
+
     private struct PatchRecord {
         let patch: TranslatedPatch
         let tint: NSView
@@ -170,17 +177,21 @@ final class TranslationPatchesView: NSView {
         let style = effectiveFontStyle(for: fontStyleHint)
         // 손글씨처럼 같은 pointSize에서 실제 글자 몸통(capHeight)이 더 작게 찍히는 글꼴은, 실측 비율만큼
         // 요청 크기를 키워 체감 크기를 고딕과 맞춘다(임의 상수가 아니라 번들 글꼴 자신의 capHeight 비율).
-        let scale = BundledFonts.opticalScale(for: style)
+        // Mail 캡처는 번들 글꼴 보정 대상이 아니므로 배율 1을 쓴다.
+        let scale = isMailTarget ? 1 : BundledFonts.opticalScale(for: style)
+        func font(size: CGFloat) -> NSFont {
+            isMailTarget ? .systemFont(ofSize: size, weight: .medium) : BundledFonts.font(for: style, size: size)
+        }
         var fontSize = (max(11, min(22, size.height * 0.847)) * scale).rounded()
         let minFontSize: CGFloat = (8 * scale).rounded()
         while fontSize > minFontSize {
-            let font = BundledFonts.font(for: style, size: fontSize)
-            if textBoundingHeight(text, font: font, width: size.width - Self.horizontalPadding * 2) <= size.height {
-                return font
+            let candidate = font(size: fontSize)
+            if textBoundingHeight(text, font: candidate, width: size.width - Self.horizontalPadding * 2) <= size.height {
+                return candidate
             }
             fontSize -= 1
         }
-        return BundledFonts.font(for: style, size: minFontSize)
+        return font(size: minFontSize)
     }
 }
 

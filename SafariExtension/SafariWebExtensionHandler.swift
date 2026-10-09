@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SafariServices
 
@@ -16,7 +17,24 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             translator = BrowserUnavailableTranslator()
         }
         // Safari에서는 확장 켜기·사이트 허용(Safari 설정)과 확장 안의 첫 동의가 연결 허용 역할을 한다.
-        return BrowserEngine(translator: translator, isEnabled: { true })
+        // 이 확장은 앱 본체와 통신하지 않으므로(위 설명) 실제 번역 언어 팩 다운로드 화면을 이 확장이 직접 열 수
+        // 없다. 언어 및 지역 설정을 실제 다운로드 화면인 것처럼 조용히 여는 대신, 이미 지원하는 방식(번들 ID로
+        // 앱 실행, 새 URL 프로토콜이나 권한 없음)으로 SMT 앱 자체를 열고, 앱에 있는 통합 언어 팩 다운로드 기능을
+        // 쓰라고 분명히 안내한다.
+        return BrowserEngine(translator: translator, isEnabled: { true }, openLanguagePack: {
+            let launched = await MainActor.run { () -> Bool in
+                guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: BrowserBridge.appBundleID) else {
+                    return false
+                }
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration, completionHandler: nil)
+                return true
+            }
+            return launched
+                ? "SMT 앱을 열었습니다. 앱의 설정 › 브라우저 번역에서 번역 언어 팩을 받아 주세요(이 Safari 확장은 다운로드 화면을 직접 열 수 없습니다)."
+                : "SMT 앱을 찾지 못했습니다. SMT 앱을 직접 열어 설정 › 브라우저 번역에서 번역 언어 팩을 받아 주세요."
+        })
     }()
 
     func beginRequest(with context: NSExtensionContext) {

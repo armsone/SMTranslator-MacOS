@@ -1,6 +1,7 @@
 "use strict";
-// SMT 웹 번역 팝업: 동의, 번역 언어, 번역 엔진(웹 번역은 엔진별 전송 동의 후), 번역(전역 자동 번역 켜기),
-// 원문 보기(전역 자동 번역 끄기), 이미지 번역, 상태. 엔진을 고르는 것만으로는 아무것도 보내지 않는다.
+// SMT 웹 번역 팝업: 동의, 번역 언어, 번역(전역 자동 번역 켜기), 원문 보기(전역 자동 번역 끄기), 상태.
+// 번역 방식은 Mac 기본 번역(기기 내) + Apple Intelligence 다듬기(가능할 때)로 고정이며 고를 수 없다.
+// 이미지 속 글자 번역은 항상 켜져 있다(옵션 아님).
 
 const api = globalThis.browser ?? globalThis.chrome;
 const IS_SAFARI = api.runtime.getURL("").startsWith("safari-web-extension:");
@@ -10,34 +11,6 @@ let tabId = null;
 let origin = null;
 let current = null;
 let notice = ""; // 번역 버튼 결과 안내(새로 고침해도 다른 오류가 없으면 계속 보인다)
-let pendingEngine = null; // 동의를 기다리는 웹 번역 엔진
-const ENGINE_NAMES = { apple: "Mac 기본 번역", deepl: "DeepL", google: "Google 번역", papago: "Papago" };
-
-// 0.5.0 이전 배경 작업자는 settings.engine 자체가 없다(필드가 문자열이 아님). 그 경우 새 번역 엔진
-// 기능(engineConsents 등)을 쓸 수 없으니, 그 사실을 솔직히 알리고 외부 전송을 임의로 주장하지 않는다.
-function isLegacyBackground(state) {
-  return typeof state?.settings?.engine !== "string";
-}
-
-// 알려진 엔진 키만 유효하게 취급한다(Object.hasOwn으로 프로토타입 체인 값을 배제해
-// "__proto__" 같은 값이 유효한 엔진으로 오판되지 않도록 한다).
-function isKnownEngine(engine) {
-  return typeof engine === "string" && Object.hasOwn(ENGINE_NAMES, engine);
-}
-
-// 알 수 없거나 비어 있는 엔진 값은 절대 그대로 화면에 보여주지 않고(undefined 노출 방지),
-// 실제로 외부로 보냈다고 거짓 주장하지 않도록 안전하게 Mac 기본 번역으로만 표시한다.
-function safeEngineName(engine) {
-  return isKnownEngine(engine) ? ENGINE_NAMES[engine] : ENGINE_NAMES.apple;
-}
-
-function engineConsentText(engine) {
-  const name = ENGINE_NAMES[engine] || engine;
-  return `${name}을(를) 고르면, 번역할 때 이 페이지에서 찾은 글자(이미지 속 글자는 이 Mac에서 인식한 텍스트만)를 SMT 앱이 ` +
-    `${name} 공식 웹페이지에 한 조각씩 입력해 번역합니다. 화면 캡처 이미지·페이지 HTML·페이지 주소는 보내지 않습니다. ` +
-    `보낸 내용에는 ${name}의 정책이 적용되며 서비스 쪽에 기록될 수 있습니다. 자동 번역이 켜져 있으면 이후 여는 페이지의 글자도 보냅니다. ` +
-    `SMT 앱(설정 › 웹 번역 전송 동의)에서도 ${name} 동의가 필요합니다. 고르는 것만으로는 보내지 않습니다.`;
-}
 
 function showError(message) {
   $("error").textContent = message || "";
@@ -66,43 +39,13 @@ function render(state) {
   $("consent").hidden = state.settings.consent;
   $("main").hidden = !state.settings.consent;
   $("target").value = state.settings.target;
-  const legacy = isLegacyBackground(state);
-  // 알려진 엔진 값이 아니거나(미판별) 레거시 배경이면 Mac 기본 번역으로만 표시한다. 저장된 설정은 바꾸지 않는다.
-  const displayEngine = !legacy && isKnownEngine(state.settings.engine) ? state.settings.engine : "apple";
-  // 웹 번역 엔진은 Chrome·Whale에서, 그 엔진을 지원하는 SMT와 연결됐을 때만 고를 수 있다.
-  const available = state.engine.ok && Array.isArray(state.engine.externalEngines) ? state.engine.externalEngines : [];
-  for (const option of $("engineSelect").options) {
-    if (option.value === "apple") continue;
-    // 레거시 배경 작업자는 engineConsents/setEngine을 모르므로 새로고침 전까지 외부 엔진을 고를 수 없게 막는다.
-    option.disabled = legacy || state.safari || !available.includes(option.value);
-  }
-  if (!pendingEngine) $("engineSelect").value = displayEngine;
-  $("engineConsent").hidden = !pendingEngine;
-  if (legacy) {
-    $("engineNote").textContent = "확장 관리에서 새로고침해 주세요.";
-  } else if (state.safari) {
-    $("engineNote").textContent = "Safari · Mac 기본 번역";
-  } else if (displayEngine !== "apple") {
-    $("engineNote").textContent = `${safeEngineName(displayEngine)} 외부 전송 · `;
-  } else {
-    $("engineNote").textContent = "";
-  }
-  $("engineNote").hidden = !$("engineNote").textContent;
-  if (!legacy && !state.safari && displayEngine !== "apple") {
-    const revoke = document.createElement("button");
-    revoke.className = "linkButton";
-    revoke.textContent = "동의 철회";
-    revoke.addEventListener("click", async () => {
-      await call({ cmd: "revokeEngine", engine: displayEngine }).catch((e) => showError(e.message));
-      refresh();
-    });
-    $("engineNote").appendChild(revoke);
-  }
-  $("images").checked = state.settings.images;
   $("fontStyle").value = ["auto", "gothic", "myeongjo", "gungseo", "hand"].includes(state.settings.fontStyle) ? state.settings.fontStyle : "auto";
   $("translate").disabled = tabId === null;
   // 이 탭이 아직 번역되지 않았어도 전역 자동 번역이 켜져 있으면 전역으로 끌 수 있어야 한다.
   $("original").disabled = !state.page && !state.settings.automaticEnabled;
+  const isTranslated = state.page?.view === "translated";
+  $("translate").classList.toggle("active", isTranslated);
+  $("original").classList.toggle("active", !isTranslated);
   if (state.settings.automaticEnabled) {
     $("autoStatus").textContent = "자동 번역 켜짐";
   } else if (!IS_SAFARI && !state.grant) {
@@ -127,7 +70,9 @@ function render(state) {
   } else if (!origin) {
     status = "이 페이지는 번역할 수 없습니다.";
   }
-  $("status").textContent = status;
+  $("statusText").textContent = status;
+  // 실제로 번역·OCR·다듬기가 진행 중일 때만 돈다(단순 자동 감시 중에는 돌지 않음, 가짜 진행률 없음).
+  $("spinner").hidden = !(state.page && state.page.running === true);
   renderLangCounts(state.page ? state.page.langCounts : null);
 }
 
@@ -181,45 +126,17 @@ $("target").addEventListener("change", async (event) => {
   refresh();
 });
 
-$("engineSelect").addEventListener("change", async (event) => {
-  const engine = event.target.value;
-  showError("");
-  if (isLegacyBackground(current)) {
-    // 레거시 배경 작업자는 setEngine/engineConsents를 모른다. 불필요한 명령을 보내지 않고 되돌린다.
-    event.target.value = "apple";
-    return;
+$("langPack").addEventListener("click", async () => {
+  // SMT에 실제 다운로드 화면을 열어 달라고 요청한다(언어/지역 설정이 아니다). Safari처럼 이 확장이 직접 그 화면을
+  // 열 수 없을 때는 응답에 안내 문구가 실려 오므로 그걸 그대로 보여준다(엉뚱한 설정을 연 것처럼 꾸미지 않는다).
+  // 연결이 안 돼 있을 때만(SMT 미실행 등) 가장 가까운 시스템 설정으로 대체한다.
+  try {
+    const response = await call({ cmd: "openLanguagePack" });
+    if (response.message) showError(response.message);
+  } catch (error) {
+    showError(error.message);
+    window.open("x-apple.systempreferences:com.apple.Localization-Settings.extension", "_blank");
   }
-  if (engine !== "apple" && !(current?.settings.engineConsents || []).includes(engine)) {
-    // 전송 안내를 보여 주고 동의를 받을 때까지 이전 엔진을 유지한다.
-    pendingEngine = engine;
-    $("engineConsentText").textContent = engineConsentText(engine);
-    $("engineConsent").hidden = false;
-    return;
-  }
-  pendingEngine = null;
-  await call({ cmd: "setEngine", engine }).catch((e) => showError(e.message));
-  refresh();
-});
-
-$("engineAgree").addEventListener("click", async () => {
-  const engine = pendingEngine;
-  pendingEngine = null;
-  if (engine) await call({ cmd: "setEngine", engine, consent: true }).catch((e) => showError(e.message));
-  refresh();
-});
-
-$("engineCancel").addEventListener("click", () => {
-  pendingEngine = null;
-  $("engineConsent").hidden = true;
-  if (current) {
-    const displayEngine = !isLegacyBackground(current) && isKnownEngine(current.settings.engine) ? current.settings.engine : "apple";
-    $("engineSelect").value = displayEngine;
-  }
-});
-
-$("images").addEventListener("change", async (event) => {
-  await call({ cmd: "setImages", enabled: event.target.checked }).catch((e) => showError(e.message));
-  refresh();
 });
 
 $("fontStyle").addEventListener("change", async (event) => {
@@ -253,7 +170,10 @@ $("translate").addEventListener("click", async () => {
       notice = "자동 번역을 켰습니다. 이 페이지는 브라우저 정책상 번역할 수 없어 다른 일반 웹페이지부터 적용됩니다.";
     }
     showError(notice);
-    if (!response.superseded && !response.restricted) $("status").textContent = "번역 중…";
+    if (!response.superseded && !response.restricted) {
+      $("statusText").textContent = "번역 중…";
+      $("spinner").hidden = false;
+    }
     setTimeout(refresh, 1200);
   } catch (error) {
     showError(error.message);
@@ -280,6 +200,22 @@ $("original").addEventListener("click", async () => {
     origin = url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
   } catch {
     origin = null;
+  }
+  // 툴바 아이콘을 눌러 팝업이 열릴 때마다 한 번만(이 즉시실행 함수 안에서만) 원문/번역을 토글한다.
+  // 전역 자동 번역을 새로 켜지는 않는다(automatic: false) — 이 탭 하나만 활성 탭 권한으로 전환한다.
+  try {
+    const opened = await call({ cmd: "popupState" });
+    if (opened.settings.consent && opened.page && !opened.page.error) {
+      if (opened.page.view === "translated") {
+        await call({ cmd: "toggleOriginal" });
+      } else {
+        // tabOnly: 전역 자동 번역이 이미 켜져 있어도(다른 탭은 그대로 자동 유지) 이 탭 하나만 수동으로
+        // 한 번 번역한다. 전역을 끄지 않아야 "번역 중이면 끄기, 아니면 켜기"가 매번 실제로 토글된다.
+        await call({ cmd: "translateNow", automatic: false, tabOnly: true });
+      }
+    }
+  } catch {
+    // 토글 실패는 조용히 무시하고 아래 refresh()가 실제 상태를 그대로 보여준다.
   }
   refresh();
 })();

@@ -82,6 +82,25 @@ final class BrowserBridgeServer: @unchecked Sendable {
         for connection in open { shutdown(connection, SHUT_RDWR) }
     }
 
+    /// 리스너 소켓만 죽었을 때(치명적 accept 오류 등) 리스너만 내린다. `stop()`과 달리 이미 접속된 연결
+    /// (`connections`)에는 손대지 않는다 — 그 연결들은 각자 스레드에서 독립적으로 계속 번역을 이어 간다.
+    /// 이후 `start()`를 다시 부르면(앱 쪽 자동 복구 트리거) 리스너만 다시 연다.
+    private func handleListenerFailure() {
+        lock.lock()
+        guard listenFD >= 0 else { lock.unlock(); return }
+        let source = acceptSource
+        let fd = listenFD
+        let path = socketPath
+        acceptSource = nil
+        listenFD = -1
+        socketPath = nil
+        lock.unlock()
+
+        source?.cancel()
+        close(fd)
+        if let path { unlink(path) }
+    }
+
     // MARK: - 접속 처리
 
     private func acceptPending() {
@@ -92,7 +111,13 @@ final class BrowserBridgeServer: @unchecked Sendable {
             lock.unlock()
             guard fd >= 0, let team else { return }
             let client = accept(fd, nil, nil)
-            if client < 0 { return }
+            if client < 0 {
+                // 논블로킹 소켓에서 더 받을 접속이 없을 때는 정상(EAGAIN). 그 밖의 오류는 리스너 자체가
+                // 죽었다는 뜻이므로 리스너만 내리고 돌아간다(이미 접속된 연결은 그대로 둔다). 이후 자동 복구
+                // 트리거(시스템 깨어남, 도우미의 복구 요청, 새로고침)가 리스너를 다시 연다.
+                if errno != EAGAIN && errno != EWOULDBLOCK { handleListenerFailure() }
+                return
+            }
             _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
             var one: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))

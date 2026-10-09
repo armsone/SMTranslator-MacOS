@@ -140,6 +140,8 @@ enum BrowserRequest {
     case ocr(id: String, target: AppLanguage, image: Data, viewport: CGSize, regions: [BrowserImageRegionInput], engine: String)
     /// 이미 화면에 그려진 Mac 기본 번역 초안을 다듬는 작은 후속 요청(앱 본체의 Chrome·Whale 전용).
     case refine(id: String, target: AppLanguage, items: [BrowserRefineItem])
+    /// 팝업의 "언어팩" 버튼: 실제 번역 언어 팩 다운로드 화면을 연다(언어/지역 설정이 아님).
+    case openLanguagePack(id: String)
 
     static let maxTexts = 150
     static let maxTextLength = 5000
@@ -226,6 +228,8 @@ enum BrowserRequest {
             }
             guard total <= maxRefineCharacters else { throw BrowserEngineError.badRequest("다듬기 전체 길이") }
             return .refine(id: id, target: target, items: items)
+        case "openLanguagePack":
+            return .openLanguagePack(id: try validID(raw.id))
         default:
             throw BrowserEngineError.badRequest("종류")
         }
@@ -275,15 +279,22 @@ actor BrowserEngine {
     /// Apple Intelligence 다듬기(앱 본체의 Chrome·Whale 엔진에서만 nil이 아니다. Safari는 항상 nil).
     private let refiner: BrowserTextRefining?
     private let isEnabled: @Sendable () async -> Bool
+    /// "언어팩" 버튼 요청 처리(언어/지역 설정이 아니라 실제 다운로드 화면을 연다). 호출부(앱 본체·Safari 확장)마다
+    /// 보여줄 수 있는 화면이 달라 엔진이 직접 AppKit 창을 열지 않고 주입받는다. 실제 다운로드 화면을 직접 열지
+    /// 못하는 호출부(Safari 확장)는 무엇을 했고 사용자가 다음에 뭘 해야 하는지 설명하는 문구를 돌려준다(nil이면
+    /// 화면을 직접 열어 추가 설명이 필요 없다는 뜻).
+    private let openLanguagePack: @Sendable () async -> String?
     private var tasks: [String: Task<Data, Never>] = [:]
     private var supportedIDs: [String]?
 
     init(translator: BrowserTextTranslating, external: BrowserExternalTranslating? = nil,
-         refiner: BrowserTextRefining? = nil, isEnabled: @escaping @Sendable () async -> Bool) {
+         refiner: BrowserTextRefining? = nil, isEnabled: @escaping @Sendable () async -> Bool,
+         openLanguagePack: @escaping @Sendable () async -> String?) {
         self.translator = translator
         self.external = external
         self.refiner = refiner
         self.isEnabled = isEnabled
+        self.openLanguagePack = openLanguagePack
     }
 
     /// 요청 한 개를 처리해 응답 JSON을 돌려준다. 응답은 항상 Chrome 상한(1MB) 이하다.
@@ -309,6 +320,11 @@ actor BrowserEngine {
         case .cancel(let id):
             tasks["\(scope)|\(id)"]?.cancel()
             return Self.encode(["type": "ack", "ok": true, "id": id])
+        case .openLanguagePack(let id):
+            let message = await openLanguagePack()
+            var response: [String: Any] = ["type": "languagePackOpened", "ok": true, "id": id]
+            if let message { response["message"] = message }
+            return Self.encode(response)
         case .translate(let id, _, _, _), .ocr(let id, _, _, _, _, _), .refine(let id, _, _):
             guard await isEnabled() else { return Self.encodeError(BrowserEngineError.disabled, id: id) }
             let key = "\(scope)|\(id)"

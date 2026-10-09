@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreFoundation
 import SafariServices
 
 /// 브라우저 번역 연동(Chrome·Whale·Safari)의 설정, 엔진 연결 서버 수명, 설치 준비를 맡는다.
@@ -10,7 +11,6 @@ import SafariServices
 @MainActor
 final class BrowserIntegration: ObservableObject {
     static let shared = BrowserIntegration()
-    static let enabledKey = "BrowserBridge.enabled"
 
     enum ChromiumBrowser: String, CaseIterable, Identifiable {
         case chrome
@@ -92,7 +92,8 @@ final class BrowserIntegration: ObservableObject {
         }
     }
 
-    @Published private(set) var isEnabled: Bool
+    /// 사용자가 명시적으로 허용한 기존 브라우저 연결 기능이며, 항상 켜져 있다(수동 켜기/끄기 없음).
+    private(set) var isEnabled = true
     @Published private(set) var serverStatus = "꺼짐"
     @Published private(set) var registrations: [ChromiumBrowser: RegistrationState] = [:]
     @Published private(set) var safariState: SafariState = .unknown
@@ -102,26 +103,27 @@ final class BrowserIntegration: ObservableObject {
     let launchedByBrowser = CommandLine.arguments.contains(BrowserBridge.launchArgument)
 
     private var server: BrowserBridgeServer?
+    private var recoveryAttempts = 0
+    private static let maxRecoveryAttempts = 3
+    /// 도우미(SMTBrowserHost)가 "앱은 떠 있는데 소켓이 없다"를 알릴 때 쓰는 신호(데이터 없음, Darwin 알림).
+    /// 받는 쪽은 이 신호 내용을 그대로 믿지 않고 실제 리스너 상태를 스스로 다시 확인한 뒤에만 되살린다.
+    private static let recoveryNotificationName = "com.local.screentranslator.browser.recover" as CFString
 
-    private init() {
-        isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
-    }
+    private init() {}
 
     // MARK: - 수명
 
-    /// 앱 시작 시 호출. 연결을 허용했거나 브라우저가 앱을 실행한 경우에만 서버를 연다
-    /// (허용 전이면 서버는 모든 번역 요청에 '연결 허용 필요' 안내만 돌려준다).
+    /// 앱 시작 시 호출. 기존 브라우저 연결 기능은 항상 켜져 있으므로 서버를 바로 연다.
     func applicationDidLaunch() {
-        if isEnabled || launchedByBrowser { startServer() }
+        startServer()
         refreshRegistrations()
+        observeRecoveryTriggers()
         // 기존에 설치 준비한 확장만 갱신한다. 브라우저 등록·허용 설정은 바꾸지 않는다.
         let staged = stagedExtensionURL
         if isInstalledInApplications,
            FileManager.default.fileExists(atPath: staged.appendingPathComponent(Self.stagingMarker).path),
            let bundled = bundledChromiumExtension,
-           let currentManifest = try? Data(contentsOf: bundled.appendingPathComponent("manifest.json")),
-           let stagedManifest = try? Data(contentsOf: staged.appendingPathComponent("manifest.json")),
-           currentManifest != stagedManifest {
+           chromiumExtensionChanged(source: bundled, staged: staged) {
             do {
                 try stageExtension()
                 lastMessage = "브라우저 확장 파일을 갱신했습니다. Chrome·Whale 확장 관리 화면에서 SMT를 새로고침한 뒤 웹페이지도 새로고침해 주세요."
@@ -135,18 +137,6 @@ final class BrowserIntegration: ObservableObject {
         server?.stop()
     }
 
-    func setEnabled(_ enabled: Bool) {
-        guard enabled != isEnabled else { return }
-        isEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
-        if enabled {
-            startServer()
-        } else {
-            server?.stop()
-            serverStatus = "꺼짐"
-        }
-    }
-
     private func startServer() {
         if server == nil {
             let translator: BrowserTextTranslating
@@ -155,20 +145,78 @@ final class BrowserIntegration: ObservableObject {
             } else {
                 translator = BrowserHostedTranslator()
             }
-            let key = Self.enabledKey
             // 확장에서 웹 번역 엔진을 고른 요청만 앱의 웹 번역 실행기로 넘긴다(앱 쪽 제공사별 동의 필요).
             // Apple Intelligence 다듬기는 이 앱 본체 엔진(Chrome·Whale)에서만 연결한다. Safari 확장은 앱 설정을
             // 읽을 수 없어 별도 엔진 인스턴스(refiner 없음)를 쓰며, 여기서 손대지 않는다.
             let engine = BrowserEngine(translator: translator, external: TranslationBackend.externalOptionsVisible ? WebTranslatorBrowserBridge() : nil,
                                        refiner: AppleBrowserRefiner(),
-                                       isEnabled: { UserDefaults.standard.bool(forKey: key) })
+                                       isEnabled: { true },
+                                       openLanguagePack: {
+                await MainActor.run {
+                    NSApp.activate(ignoringOtherApps: true)
+                    MailWindowCoordinator.shared.openLanguagePackDownload()
+                }
+                return nil // 이 앱 안에서 실제 다운로드 시트를 바로 열었으므로 추가 설명이 필요 없다.
+            })
             server = BrowserBridgeServer(engine: engine)
         }
         if let failure = server?.start() {
             serverStatus = failure
         } else {
-            serverStatus = isEnabled ? "대기 중 (기본: Mac 기본 번역)" : "연결 허용 전 — 요청을 처리하지 않음"
+            serverStatus = "대기 중 (기본: Mac 기본 번역)"
+            recoveryAttempts = 0
         }
+    }
+
+    /// 새로고침 버튼: 리스너가 실제로 죽어 있을 때만 리스너를 다시 연다. 이미 정상이면 아무 것도 바꾸지
+    /// 않는다 — 서버 전체를 내렸다가 다시 열던 예전 방식과 달리, 다른 브라우저·탭의 접속·진행 중인 번역은
+    /// 건드리지 않는다. 등록·동의·설치 상태도 바꾸지 않는다. 반복 실패 시 더 이상 자동으로 재시도하지
+    /// 않고 사용자에게 이유를 보여준다(무한 재시도 방지).
+    func recoverConnection() {
+        if server?.isRunning == true {
+            lastMessage = "브라우저 연결은 이미 정상입니다. 다른 접속에는 영향이 없습니다."
+            refreshRegistrations()
+            return
+        }
+        guard recoveryAttempts < Self.maxRecoveryAttempts else {
+            lastMessage = "브라우저 연결을 다시 열지 못했습니다. SMT를 다시 시작해 보세요."
+            return
+        }
+        recoveryAttempts += 1
+        startServer()
+        refreshRegistrations()
+        lastMessage = server?.isRunning == true ? "브라우저 연결을 다시 열었습니다." : serverStatus
+    }
+
+    /// 리스너가 외부 요인으로 죽었을 때 저절로 되살리는 트리거 두 가지를 건다(타이머·반복 폴링 없음).
+    /// 1) 시스템 깨어남 — 절전 복귀 후 한 번 확인한다.
+    /// 2) 도우미(SMTBrowserHost)의 복구 요청 — 앱은 실행 중인데 소켓이 없을 때 도우미가 보낸다(데이터 없음).
+    /// 둘 다 리스너가 이미 살아 있으면 아무 일도 하지 않고, 접속 중인 연결에는 손대지 않는다.
+    private func observeRecoveryTriggers() {
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.recoverListenerIfNeeded() }
+        }
+        let callback: CFNotificationCallback = { _, observer, _, _, _ in
+            guard let observer else { return }
+            let integration = Unmanaged<BrowserIntegration>.fromOpaque(observer).takeUnretainedValue()
+            Task { @MainActor in integration.recoverListenerIfNeeded() }
+        }
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         Unmanaged.passUnretained(self).toOpaque(),
+                                         callback,
+                                         Self.recoveryNotificationName,
+                                         nil,
+                                         .deliverImmediately)
+    }
+
+    /// 자동 복구 본체: 사용자에게 보일 메시지는 남기지 않는다(조용히 되살리거나, 조용히 포기한다).
+    /// 새로고침 버튼과 같은 시도 횟수 한도를 나눠 쓰므로 여기서 소모해도 무한 재시도로 번지지 않는다.
+    private func recoverListenerIfNeeded() {
+        guard server?.isRunning != true else { return }
+        guard recoveryAttempts < Self.maxRecoveryAttempts else { return }
+        recoveryAttempts += 1
+        startServer()
+        refreshRegistrations()
     }
 
     // MARK: - Chrome · Whale
@@ -218,7 +266,6 @@ final class BrowserIntegration: ObservableObject {
     /// 이 단계가 성공했을 때만 경로 복사와 확장 관리 열기를 이어서 한다(실패하면 후속 동작도 성공 안내도 하지 않는다).
     func startInstall(_ browser: ChromiumBrowser) {
         do {
-            guard isEnabled else { throw SetupError("먼저 '브라우저 확장 연결 허용'을 켜 주세요.") }
             guard browser.applicationURL != nil else { throw SetupError("\(browser.title)이(가) 설치되어 있지 않습니다.") }
             guard isInstalledInApplications else {
                 throw SetupError("SMT를 응용 프로그램 폴더로 옮겨 실행한 뒤 다시 시작하세요(등록 경로가 이 앱 위치에 고정됩니다).")
@@ -282,6 +329,25 @@ final class BrowserIntegration: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(stagedExtensionURL.path, forType: .string)
         if announce { lastMessage = "확장 폴더 경로를 복사했습니다." }
+    }
+
+    /// 번들 확장(이번 빌드)과 이미 설치 준비된 확장의 실제 파일(background.js·content.js·popup.html/css/js·아이콘 등)을
+    /// 바이트 단위로 비교한다. manifest.json의 version만 보면 버전을 올리지 않은 개발 빌드는 파일이 바뀌어도
+    /// 갱신이 전혀 되지 않으므로, 번들에 있는 모든 일반 파일을 staged 쪽 같은 상대 경로와 직접 비교한다.
+    private func chromiumExtensionChanged(source: URL, staged: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(at: source, includingPropertiesForKeys: [.isRegularFileKey],
+                                                        options: [.skipsHiddenFiles]) else { return true }
+        for case let fileURL as URL in enumerator {
+            guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            guard fileURL.path.hasPrefix(source.path) else { continue }
+            let relative = String(fileURL.path.dropFirst(source.path.count))
+            let counterpart = staged.appendingPathComponent(relative)
+            guard let sourceData = try? Data(contentsOf: fileURL),
+                  let stagedData = try? Data(contentsOf: counterpart),
+                  sourceData == stagedData else { return true }
+        }
+        return false
     }
 
     private func stageExtension() throws {

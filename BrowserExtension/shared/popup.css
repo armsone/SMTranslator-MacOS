@@ -18,9 +18,48 @@ button.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
 .auto { margin: 0 0 10px; font-size: 12px; color: GrayText; }
-.status { margin: 10px 0 0; color: GrayText; min-height: 1em; }
+.status { margin: 10px 0 0; color: GrayText; min-height: 1em; display: flex; align-items: center; gap: 6px; }
+.spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(127,127,127,.35);
+  border-top-color: #0a84ff;
+  border-radius: 50%;
+  animation: smtSpin .7s linear infinite;
+  flex: none;
+}
+.spinner[hidden] { display: none; }
+@keyframes smtSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-color: transparent; background: #0a84ff; }
+}
 .langStats { margin: 4px 0 0; font-size: 12px; color: GrayText; }
 .error { margin: 6px 0 0; color: #ff453a; line-height: 1.4; }
-.engineConsent { margin: 0 0 10px; padding: 8px; border-radius: 6px; background: rgba(255,159,10,.14); }
-.engineConsent p { margin: 0 0 8px; font-size: 12px; line-height: 1.45; }
 .linkButton { border: none; padding: 0; color: #0a84ff; background: none; font-size: 12px; cursor: pointer; }
+
+.switch {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: rgba(127,127,127,.16);
+}
+.switchSide {
+  flex: 1;
+  padding: 12px 8px;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.switchSide:disabled { opacity: .5; cursor: default; }
+.switchSide.active {
+  background: #0a84ff;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+.langPackButton { margin-top: 4px; font-size: 13px; }

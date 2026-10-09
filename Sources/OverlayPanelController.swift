@@ -249,6 +249,10 @@ final class OverlayPanelController: NSObject {
         titleStrip.lockButton.action = #selector(lockButtonPressed)
         titleStrip.primaryButton.target = self
         titleStrip.primaryButton.action = #selector(primaryButtonPressed)
+        titleStrip.originalSegment.target = self
+        titleStrip.originalSegment.action = #selector(originalSegmentPressed)
+        titleStrip.translateSegment.target = self
+        titleStrip.translateSegment.action = #selector(translateSegmentPressed)
         titleStrip.onDragWillMove = { [weak self] in self?.dragWillMove() }
         titleStrip.onDragFinished = { [weak self] in self?.dragFinished() }
         titleStrip.onDoubleClick = { [weak self] in self?.fitToWindowBehindOnDoubleClick() }
@@ -317,22 +321,22 @@ final class OverlayPanelController: NSObject {
             }
             .store(in: &cancellables)
 
-        // 주 버튼(Enter와 같은 동작): '번역' ↔ '원문보기', 외부 AI 실행 중에는 '취소'(항상 누를 수 있음)
+        // 큰 원문/번역 전환 스위치: 번역이 보이면 '번역' 쪽, 아니면 '원문' 쪽이 강조된다.
+        // 외부 AI 실행 중에는 같은 자리에 '취소'(항상 누를 수 있음)가 대신 보인다.
         Publishers.CombineLatest3(viewModel.$primaryAction, viewModel.$isProcessing, viewModel.$isExternalRunning)
             .receive(on: RunLoop.main)
             .sink { [weak self] action, isProcessing, isExternalRunning in
                 guard let self, !self.viewModel.hasDeferredRegionCleanup else { return }
-                let button = self.titleStrip.primaryButton
+                self.titleStrip.setCancelMode(isExternalRunning)
                 if isExternalRunning {
+                    let button = self.titleStrip.primaryButton
                     button.title = "취소"
                     button.toolTip = "진행 중인 외부 AI 번역을 취소합니다"
                     button.isEnabled = true
                 } else {
-                    button.title = action.title
-                    button.toolTip = action == .showOriginal
-                        ? "번역을 숨기고 창 아래 실제 화면을 그대로 보여줍니다 (Enter). Space는 다시 번역하지 않고 저장된 번역↔실제 화면을 오갑니다"
-                        : "현재 영역을 새로 캡처해 인식·번역합니다 (Enter). 완료된 번역이 있으면 Space로 저장된 번역을 다시 보여줍니다"
-                    button.isEnabled = !isProcessing
+                    self.titleStrip.setSwitchShowingTranslated(action == .showOriginal)
+                    self.titleStrip.originalSegment.isEnabled = !isProcessing
+                    self.titleStrip.translateSegment.isEnabled = !isProcessing
                 }
                 self.titleStrip.needsLayout = true
             }
@@ -395,11 +399,15 @@ final class OverlayPanelController: NSObject {
 
     @objc private func primaryButtonPressed() {
         viewModel.finishRegionChange()
-        if viewModel.isExternalRunning {
-            viewModel.cancelExternalTranslation()
-        } else {
-            viewModel.performPrimaryAction()
-        }
+        viewModel.cancelExternalTranslation()
+    }
+
+    @objc private func originalSegmentPressed() {
+        viewModel.selectShowOriginal()
+    }
+
+    @objc private func translateSegmentPressed() {
+        viewModel.selectCaptureAndTranslate()
     }
 
     // MARK: - 표시/숨김
@@ -480,8 +488,11 @@ final class OverlayPanelController: NSObject {
     }
 
     /// 새 캡처의 OCR 메타데이터가 준비된 뒤 호출된다. 이후 줄 단위로 패치가 추가된다.
-    func beginTranslationDisplay() {
+    /// isMailTarget이 true면(캡처 영역이 Apple Mail 창을 덮음) 이 캡처의 패치는 번들 글꼴 대신
+    /// 시스템 기본 글꼴만 쓴다.
+    func beginTranslationDisplay(isMailTarget: Bool) {
         patchesView.removeAllPatches()
+        patchesView.isMailTarget = isMailTarget
         patchesView.isHidden = false
     }
 
@@ -528,8 +539,10 @@ final class OverlayPanelController: NSObject {
         patchesView.isHidden = true
         titleStrip.statusLabel.isHidden = true
         titleStrip.remainingBar.isHidden = true
-        titleStrip.primaryButton.isEnabled = true
-        titleStrip.primaryButton.title = "번역"
+        titleStrip.setCancelMode(false)
+        titleStrip.setSwitchShowingTranslated(false)
+        titleStrip.originalSegment.isEnabled = true
+        titleStrip.translateSegment.isEnabled = true
         onRegionWillChange?()
     }
 

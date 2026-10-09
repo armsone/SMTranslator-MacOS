@@ -156,12 +156,8 @@ final class AppModel {
     var targetLanguageID = "ko" {
         didSet { if oldValue != targetLanguageID { restartTranslation() } }
     }
-    /// 사용자가 고른 번역 방식(화면 번역과 공용, TranslationBackendStore가 UserDefaults에 저장). 고르는 즉시 다음 메일·재실행에 쓰인다.
-    /// 외부 AI로 바꾸는 것만으로는 현재 메일을 보내지 않는다(번역 실행을 눌러야 전송).
-    var backend: TranslationBackend {
-        get { TranslationBackendStore.shared.backend }
-        set { TranslationBackendStore.shared.backend = newValue }
-    }
+    /// 메일·화면 번역이 공용으로 쓰는 고정 번역 방식(Mac 기본 번역 + 가능하면 Apple Intelligence 다듬기). 고를 수 없다.
+    var backend: TranslationBackend { TranslationBackendStore.shared.backend }
     var displayMode: DisplayMode = .translation
     /// HTML 메일을 원본 서식으로 보여 줄지(끄면 기존 읽기용 텍스트 보기)
     var preferFormattedHTML = true {

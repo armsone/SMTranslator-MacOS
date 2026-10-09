@@ -47,6 +47,35 @@ enum WindowGeometry {
         return result
     }
 
+    /// 캡처 영역을 가장 많이 덮는 다른 앱 창의 소유 프로세스가 Apple Mail(com.apple.mail)인지 읽기 전용으로 확인한다.
+    /// 번역 패치가 화면 번역용 번들 글꼴을 쓸지(다른 앱) 시스템 기본 글꼴만 쓸지(Mail) 가르는 데만 쓰며,
+    /// 전역 글꼴 설정 자체는 바꾸지 않는다. 창 소유 PID는 이미 otherAppWindows()에서도 읽는 공개 정보이고,
+    /// PID → bundleIdentifier는 NSRunningApplication으로 조회해 새 권한이 필요 없다.
+    static func isCaptureOverAppleMail(_ frame: NSRect) -> Bool {
+        guard let primaryHeight = primaryDisplayHeight(),
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return false }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        var bestPID: pid_t?
+        var bestOverlapArea: CGFloat = 0
+        for info in list {
+            guard let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid != ownPID,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }
+            let windowFrame = NSRect(x: bounds.minX, y: primaryHeight - bounds.maxY, width: bounds.width, height: bounds.height)
+            let overlap = windowFrame.intersection(frame)
+            guard !overlap.isNull else { continue }
+            let area = overlap.width * overlap.height
+            if area > bestOverlapArea {
+                bestOverlapArea = area
+                bestPID = pid
+            }
+        }
+        guard let pid = bestPID, bestOverlapArea > 0 else { return false }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.mail"
+    }
+
     /// CGMainDisplayID(전역 좌표 원점 디스플레이)의 높이(pt). AppKit 주 화면 frame은 원점이 (0, 0)이다.
     private static func primaryDisplayHeight() -> CGFloat? {
         let mainID = CGMainDisplayID()

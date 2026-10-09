@@ -1,6 +1,7 @@
 import SwiftUI
 
-// 설정: 번역 방식(메일·화면 공용), Mail 번역 버튼, 외부 AI 웹 계정 로그인 상태·로그인 창·브라우저 표시 방식·전송 동의·세션 삭제·진단 로그 공유.
+// 일반 설정: 번역 방식 안내(고정값, 선택 불가), Dock·Mail 번역 버튼, 외부 AI 웹 계정 로그인 상태·로그인 창·
+// 브라우저 표시 방식·전송 동의·세션 삭제·진단 로그 공유. 브라우저 번역 설치는 같은 설정 창의 다른 탭에 있다(BrowserSetupView).
 // 앱 업데이트·로그인 시 자동 시작은 메뉴 막대 메뉴의 기존 항목이 담당한다(업데이터는 하나만 둔다).
 
 struct AISettingsView: View {
@@ -8,53 +9,12 @@ struct AISettingsView: View {
     @State private var webConsents = WebTranslatorConsentStore.shared
     @State private var webConsentRequest: WebTranslator?
     @ObservedObject private var diagnostics = AIBIDiagnosticsStore.shared
-    @State private var methods = TranslationBackendStore.shared
     @State private var dockVisibility = DockVisibilityStore.shared
     @State private var mailButtonEnabled = MailToolbarButton.shared.isEnabled
     @State private var confirmClear = false
-    @State private var aiRefineEnabled = AppleTranslationRefiner.isEnabled
 
     var body: some View {
         Form {
-            Section {
-                Picker("번역 방식", selection: $methods.backend) {
-                    ForEach(TranslationBackend.visibleCases.filter { !$0.isExternal }) { backend in
-                        Text("\(backend.title) — \(backend.detail)")
-                            .tag(backend)
-                            .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
-                    }
-                    if TranslationBackend.externalOptionsVisible {
-                        Divider()
-                        ForEach(TranslationBackend.visibleCases.filter { $0.provider != nil }) { backend in
-                            Text("\(backend.title) — \(backend.detail)").tag(backend)
-                        }
-                        Divider()
-                        ForEach(TranslationBackend.visibleCases.filter { $0.webTranslator != nil }) { backend in
-                            Text("\(backend.title) — \(backend.detail)").tag(backend)
-                        }
-                    }
-                }
-            } header: {
-                Text("번역 방식")
-            } footer: {
-                Text("선택한 방식으로 메일과 화면을 번역합니다.")
-            }
-
-            Section {
-                Toggle("Apple Intelligence로 번역문 다듬기", isOn: Binding(
-                    get: { aiRefineEnabled },
-                    set: { enabled in
-                        aiRefineEnabled = enabled
-                        AppleTranslationRefiner.isEnabled = enabled
-                    }
-                ))
-                Text(AppleTranslationRefiner.availabilityReason).foregroundStyle(.secondary)
-            } header: {
-                Text("Apple Intelligence 다듬기")
-            } footer: {
-                Text("Mac 기본 번역문을 기기 안에서 다듬습니다.")
-            }
-
             Section {
                 Toggle("Dock에 아이콘 표시", isOn: $dockVisibility.showDockIcon)
             } header: {

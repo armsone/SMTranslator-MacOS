@@ -475,9 +475,11 @@ final class HeaderBackgroundView: NSView {
 /// 헤더 전체가 한 줄로 된 제목/이동 스트립. 아이콘 버튼 외의 어디를 끌어도
 /// HeaderDrag.track이 직접 추적하는 mouseDragged/mouseUp 루프로 창을 이동한다(이동·크기 잠금 시 비활성).
 /// 왼쪽부터 닫기·전체화면 맞추기·맞추기 전 크기로, 가운데는 상태 문구만 보이는 빈 끌기 공간,
-/// 오른쪽은 색상·고정(핀)·이동잠금(자물쇠)·주 버튼('번역' ↔ '원문보기')이다. 버튼들은 창 이동을
-/// 가로채지 않도록 hitTest에서 직접 가로챈다.
+/// 오른쪽은 색상·고정(핀)·이동잠금(자물쇠)·원문/번역 전환 스위치다(외부 AI 실행 중에는 같은 자리에 취소
+/// 버튼이 대신 보인다). 버튼들은 창 이동을 가로채지 않도록 hitTest에서 직접 가로챈다.
 final class TitleDragStripView: NSView {
+    /// 이보다 좁으면 전환 스위치 옆 Enter/Space 단축키 표기를 숨긴다(자리가 모자람).
+    static let minWidthForShortcutHints: CGFloat = 360
     var isDragEnabled = true
     /// 실제로 움직이기 시작한 첫 끌기(HeaderDrag.track 내부)에서 한 번 호출된다(그냥 클릭이면 호출되지 않음).
     var onDragWillMove: (() -> Void)?
@@ -494,7 +496,14 @@ final class TitleDragStripView: NSView {
     let paletteButton: NSButton
     let pinButton: NSButton
     let lockButton: NSButton
+    /// 외부 AI 실행 중에만 보이는 취소 버튼. 그 외에는 숨겨지고 아래 두 전환 버튼이 그 자리에 보인다.
     let primaryButton: NSButton
+    /// 원문/번역 전환 스위치(항상 둘 다 보임). 지금 상태 쪽이 강한 배경 + 굵은 글자로 또렷이 구분된다.
+    let originalSegment: NSButton
+    let translateSegment: NSButton
+    /// 전환 스위치 옆 단축키 표기. 창이 좁아 자리가 없으면 자동으로 숨는다(layout 참고).
+    let translateShortcutHint = NSTextField(labelWithString: "↵")
+    let originalShortcutHint = NSTextField(labelWithString: "↵/Space")
     let statusLabel = NSTextField(labelWithString: "")
     /// 외부 AI 답변 대기 남은 시간(1:59 → 0:00)을 줄어드는 막대로 보여준다. 그 외에는 숨긴다.
     let remainingBar = NSProgressIndicator()
@@ -510,6 +519,13 @@ final class TitleDragStripView: NSView {
         return button
     }
 
+    private static func switchSegment(_ title: String) -> NSButton {
+        let button = NSButton(title: title, target: nil, action: nil)
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        return button
+    }
+
     override init(frame frameRect: NSRect) {
         closeButton = Self.iconButton("xmark.circle.fill", help: "창 숨기기 (Esc) — 메뉴 막대 아이콘이나 ⌃⌥⇧⌘T로 다시 열 수 있습니다")
         fullDisplayButton = Self.iconButton("arrow.up.left.and.arrow.down.right", help: "메뉴 막대와 Dock을 제외한 화면에 맞추기")
@@ -517,21 +533,36 @@ final class TitleDragStripView: NSView {
         paletteButton = Self.iconButton("paintpalette", help: "번역문 글자색·배경색·진하기 설정")
         pinButton = Self.iconButton("pin.fill", help: "항상 위에 고정 (기본 켜짐)")
         lockButton = Self.iconButton("lock.open", help: "이동·크기 잠금: 켜면 창 이동과 가장자리 크기 조절만 막힙니다")
-        primaryButton = NSButton(title: "번역", target: nil, action: nil)
+        primaryButton = NSButton(title: "취소", target: nil, action: nil)
+        originalSegment = Self.switchSegment("원문")
+        translateSegment = Self.switchSegment("번역")
         super.init(frame: frameRect)
 
         primaryButton.bezelStyle = .rounded
         primaryButton.controlSize = .mini
         primaryButton.font = .systemFont(ofSize: 10, weight: .semibold)
         primaryButton.imageScaling = .scaleProportionallyDown
-        primaryButton.toolTip = "현재 영역을 한 번 캡처해 인식·번역합니다 (Space 또는 Enter)"
-        primaryButton.bezelColor = .systemBlue
+        primaryButton.toolTip = "진행 중인 외부 AI 번역을 취소합니다"
+        primaryButton.bezelColor = .systemRed
         primaryButton.contentTintColor = .white
+        primaryButton.isHidden = true
+
+        originalSegment.toolTip = "번역을 숨기고 창 아래 실제 화면을 그대로 보여줍니다 (Enter 또는 Space)"
+        translateSegment.toolTip = "현재 영역을 캡처해 인식·번역합니다 (Enter)"
+        setSwitchShowingTranslated(false)
 
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.cell?.truncatesLastVisibleLine = true
+
+        for hint in [translateShortcutHint, originalShortcutHint] {
+            hint.font = .systemFont(ofSize: 9)
+            hint.textColor = NSColor(calibratedWhite: 0.6, alpha: 1)
+            hint.isHidden = true
+        }
+        translateShortcutHint.toolTip = translateSegment.toolTip
+        originalShortcutHint.toolTip = originalSegment.toolTip
 
         remainingBar.style = .bar
         remainingBar.isIndeterminate = false
@@ -541,8 +572,34 @@ final class TitleDragStripView: NSView {
         remainingBar.isHidden = true
 
         [closeButton, fullDisplayButton, restoreButton, statusLabel, remainingBar,
-         paletteButton, pinButton, lockButton, primaryButton].forEach(addSubview)
+         paletteButton, pinButton, lockButton, primaryButton, originalSegment, translateSegment,
+         translateShortcutHint, originalShortcutHint].forEach(addSubview)
         toolTip = "이 줄의 빈 곳을 끌어 창을 이동합니다 (이동·크기 잠금 시 이동 불가). 더블클릭하면 겹쳐진 다른 앱 창의 크기에 맞춥니다"
+    }
+
+    /// 취소 버튼과 원문/번역 전환 스위치는 같은 자리를 나눠 쓴다(한 번에 하나만 보인다).
+    func setCancelMode(_ isCancelling: Bool) {
+        primaryButton.isHidden = !isCancelling
+        originalSegment.isHidden = isCancelling
+        translateSegment.isHidden = isCancelling
+        if isCancelling {
+            translateShortcutHint.isHidden = true
+            originalShortcutHint.isHidden = true
+        } else {
+            needsLayout = true
+        }
+    }
+
+    /// 전환 스위치 모양을 지금 상태에 맞춰 갱신한다: 번역이 보이면 '번역' 쪽, 아니면 '원문' 쪽이 강조된다.
+    func setSwitchShowingTranslated(_ showingTranslated: Bool) {
+        style(originalSegment, active: !showingTranslated)
+        style(translateSegment, active: showingTranslated)
+    }
+
+    private func style(_ button: NSButton, active: Bool) {
+        button.font = .systemFont(ofSize: 11, weight: active ? .bold : .regular)
+        button.bezelColor = active ? .controlAccentColor : nil
+        button.contentTintColor = active ? .white : .secondaryLabelColor
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -564,15 +621,49 @@ final class TitleDragStripView: NSView {
         restoreButton.frame = centeredIconFrame(x: fullDisplayButton.frame.maxX + 8)
         let leftEnd = restoreButton.frame.maxX + 10
 
-        primaryButton.sizeToFit()
-        let buttonWidth = max(44, primaryButton.frame.width)
-        let primaryFrame = NSRect(x: bounds.width - buttonWidth - 10,
-                                  y: (h - primaryButton.frame.height) / 2,
-                                  width: buttonWidth,
-                                  height: primaryButton.frame.height)
-        primaryButton.frame = primaryFrame
+        // 취소 버튼과 전환 스위치는 같은 오른쪽 자리를 나눠 쓴다(둘 중 하나만 보임, setCancelMode 참고).
+        let trailingMinX: CGFloat
+        if primaryButton.isHidden {
+            let segmentWidth: CGFloat = 38
+            let segmentHeight: CGFloat = 20
+            let y = (h - segmentHeight) / 2
+            translateSegment.frame = NSRect(x: bounds.width - segmentWidth - 10, y: y, width: segmentWidth, height: segmentHeight)
+            originalSegment.frame = NSRect(x: translateSegment.frame.minX - segmentWidth, y: y, width: segmentWidth, height: segmentHeight)
 
-        var trailingX = primaryFrame.minX - 8
+            // 창이 좁으면 숨기고, 넓을 때만 전환 스위치 바로 옆에 Enter/Space 단축키를 보여준다.
+            translateShortcutHint.sizeToFit()
+            originalShortcutHint.sizeToFit()
+            let hintsWidth = translateShortcutHint.frame.width + originalShortcutHint.frame.width + 8
+            let showHints = bounds.width >= Self.minWidthForShortcutHints
+            translateShortcutHint.isHidden = !showHints
+            originalShortcutHint.isHidden = !showHints
+            if showHints {
+                translateShortcutHint.frame = NSRect(x: translateSegment.frame.minX - 4 - translateShortcutHint.frame.width,
+                                                      y: (h - translateShortcutHint.frame.height) / 2,
+                                                      width: translateShortcutHint.frame.width,
+                                                      height: translateShortcutHint.frame.height)
+                originalShortcutHint.frame = NSRect(x: translateShortcutHint.frame.minX - 4 - originalShortcutHint.frame.width,
+                                                     y: (h - originalShortcutHint.frame.height) / 2,
+                                                     width: originalShortcutHint.frame.width,
+                                                     height: originalShortcutHint.frame.height)
+                trailingMinX = originalShortcutHint.frame.minX
+            } else {
+                _ = hintsWidth
+                trailingMinX = originalSegment.frame.minX
+            }
+        } else {
+            primaryButton.sizeToFit()
+            let buttonWidth = max(44, primaryButton.frame.width)
+            primaryButton.frame = NSRect(x: bounds.width - buttonWidth - 10,
+                                      y: (h - primaryButton.frame.height) / 2,
+                                      width: buttonWidth,
+                                      height: primaryButton.frame.height)
+            trailingMinX = primaryButton.frame.minX
+            translateShortcutHint.isHidden = true
+            originalShortcutHint.isHidden = true
+        }
+
+        var trailingX = trailingMinX - 8
         for button in [lockButton, pinButton, paletteButton] {
             trailingX -= iconSize
             button.frame = centeredIconFrame(x: trailingX)
@@ -594,8 +685,9 @@ final class TitleDragStripView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
-        for button in [closeButton, fullDisplayButton, restoreButton, paletteButton, lockButton, pinButton, primaryButton]
-        where button.frame.contains(local) {
+        for button in [closeButton, fullDisplayButton, restoreButton, paletteButton, lockButton, pinButton,
+                       primaryButton, originalSegment, translateSegment]
+        where !button.isHidden && button.frame.contains(local) {
             return button
         }
         return self

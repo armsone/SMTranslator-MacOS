@@ -58,33 +58,20 @@ enum ExternalConsent {
     }
 }
 
-/// 앱 전체에서 하나뿐인 번역 방식 선택. 기본값은 Mac 기본 번역이다.
+/// 앱 전체에서 하나뿐인 번역 방식: 항상 Mac 기본 번역(기기 내) + 가능하면 Apple Intelligence 다듬기.
+/// 사용자가 고를 수 있는 선택지는 없다(설정·메뉴에서 방식 선택 UI를 제거했다).
 @MainActor
 @Observable
 final class TranslationBackendStore {
     static let shared = TranslationBackendStore()
 
-    var backend: TranslationBackend {
-        didSet {
-            if backend.isExternal && !TranslationBackend.externalOptionsVisible {
-                backend = .system
-            }
-            guard oldValue != backend else { return }
-            UserDefaults.standard.set(backend.rawValue, forKey: TranslationBackend.defaultsKey)
-            for observer in observers { observer(oldValue, backend) }
-        }
-    }
+    let backend: TranslationBackend = .system
 
     @ObservationIgnored private var observers: [(TranslationBackend, TranslationBackend) -> Void] = []
 
-    private init() {
-        let stored = UserDefaults.standard.string(forKey: TranslationBackend.defaultsKey)
-            .flatMap(TranslationBackend.init(rawValue:)) ?? .system
-        backend = (stored.isExternal && !TranslationBackend.externalOptionsVisible)
-            || (stored == .intelligence && !TranslationBackend.intelligenceSupported) ? .system : stored
-    }
+    private init() {}
 
-    /// 방식이 바뀔 때(이전 값, 새 값) 호출된다. 메일 모델과 화면 모델이 각자 진행 중 작업을 정리한다.
+    /// 더 이상 방식이 바뀌지 않으므로 호출되지 않지만, 기존 구독 코드가 그대로 컴파일되도록 남겨둔다.
     func observe(_ observer: @escaping (TranslationBackend, TranslationBackend) -> Void) {
         observers.append(observer)
     }

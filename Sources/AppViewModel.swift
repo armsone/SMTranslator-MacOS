@@ -159,6 +159,21 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// 제목줄 큰 원문/번역 전환 스위치의 '원문' 쪽: 지금 번역이 보일 때만 원문으로 바꾼다.
+    /// 이미 원문(또는 아직 아무것도 번역하지 않음)이면 아무 것도 하지 않는다(같은 쪽을 다시 눌러도 그대로).
+    func selectShowOriginal() {
+        finishRegionChange()
+        guard !isProcessing, primaryAction == .showOriginal else { return }
+        showOriginal()
+    }
+
+    /// 제목줄 큰 원문/번역 전환 스위치의 '번역' 쪽: 항상 새로 캡처·인식·번역한다(Enter와 같은 동작).
+    func selectCaptureAndTranslate() {
+        finishRegionChange()
+        guard !isProcessing else { return }
+        captureOnce()
+    }
+
     /// Space: 완료된 번역이 있으면 실제 화면 ↔ 같은 번역 패치만 오간다(캡처·인식·번역 요청 없음).
     /// 완료된 번역이 없을 때만 캡처·번역한다.
     func performCachedToggle() {
@@ -491,7 +506,7 @@ final class AppViewModel: ObservableObject {
         currentLines = Dictionary(uniqueKeysWithValues: lines.map { ($0.id, $0) })
         lineBackgroundColors = bgColors
         isDisplayingResult = true
-        overlay?.beginTranslationDisplay()
+        overlay?.beginTranslationDisplay(isMailTarget: WindowGeometry.isCaptureOverAppleMail(screenFrame))
 
         if source.language == target {
             for line in lines {

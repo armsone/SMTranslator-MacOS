@@ -12,6 +12,7 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
 
     private var mailWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private let settingsSection = SettingsSectionStore()
 
     /// NSApp.servicesProvider가 제공자를 보유한다고 가정하지 않고 이 객체가 앱 수명 동안 직접 보유한다.
     private let serviceProvider = MailServiceProvider()
@@ -59,15 +60,16 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
         return window
     }
 
-    // MARK: - 설정 창
+    // MARK: - 설정 창(설정·옵션·브라우저 번역을 한 창의 탭으로 모음)
 
-    func showSettings() {
+    func showSettings(section: SettingsSection = .general) {
         NSApp.activate()
+        settingsSection.section = section
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: AISettingsView())
+            let hosting = NSHostingController(rootView: SettingsView(store: settingsSection))
             let window = NSWindow(contentViewController: hosting)
             window.title = "스크린 메일 번역기 설정"
-            // 메일 결과 창·AI 브라우저 패널과 구분되는 설정 창 식별자
+            // 메일 결과 창과 구분되는 설정 창 식별자
             window.identifier = NSUserInterfaceItemIdentifier("settings")
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
@@ -77,6 +79,12 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// 브라우저 확장의 "언어팩" 버튼이 호출: 설정 창을 브라우저 탭으로 열고 그 안에서 바로 다운로드 시트를 띄운다.
+    func openLanguagePackDownload() {
+        showSettings(section: .browser)
+        settingsSection.showLanguagePackSheet = true
     }
 
     // MARK: - NSWindowDelegate

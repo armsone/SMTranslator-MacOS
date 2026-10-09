@@ -84,6 +84,10 @@ struct ContentView: View {
             }
             .help(".eml 파일 또는 이미지 파일을 엽니다")
         }
+        ToolbarItem(id: "display-switch", placement: .primaryAction) {
+            OriginalTranslateSwitch(displayMode: $model.displayMode)
+                .help("원문 ↔ 번역 전환. 번역과 원문을 나란히 보려면 '보기' 메뉴에서 '번역 + 원문'을 고르세요.")
+        }
         ToolbarItem(id: "languages", placement: .automatic) {
             HStack(spacing: 4) {
                 Picker("원본 언어", selection: $model.sourceLanguageID) {
@@ -104,28 +108,6 @@ struct ContentView: View {
             }
             .labelsHidden()
             .help("원본 언어와 대상 언어")
-        }
-        ToolbarItem(id: "backend", placement: .automatic) {
-            Picker("번역 방식", selection: $model.backend) {
-                ForEach(TranslationBackend.visibleCases.filter { !$0.isExternal }) { backend in
-                    Text("\(backend.title) — \(backend.detail)")
-                        .tag(backend)
-                        .selectionDisabled(backend == .intelligence && !TranslationBackend.intelligenceSupported)
-                }
-                if TranslationBackend.externalOptionsVisible {
-                    Divider()
-                    ForEach(TranslationBackend.visibleCases.filter { $0.provider != nil }) { backend in
-                        Text("\(backend.title) — \(backend.detail)").tag(backend)
-                    }
-                    Divider()
-                    ForEach(TranslationBackend.visibleCases.filter { $0.webTranslator != nil }) { backend in
-                        Text("\(backend.title) — \(backend.detail)").tag(backend)
-                    }
-                }
-            }
-            .labelsHidden()
-            .frame(width: 210)
-            .help("Mac 기본 번역 또는 Apple Intelligence 우선 번역을 고릅니다.")
         }
         ToolbarItem(id: "display", placement: .automatic) {
             Menu {
@@ -170,6 +152,35 @@ struct ContentView: View {
             Task { @MainActor in AppModel.shared.open(url: url) }
         }
         return true
+    }
+}
+
+/// 원문/번역 큰 전환 스위치(선택된 쪽은 강한 배경 + 굵은 글자). "번역 + 원문" 나란히 보기는 보기 메뉴의
+/// 기존 3단 선택에만 남겨 두고, 이 스위치는 가장 자주 쓰는 두 상태만 한눈에 보여주고 바로 누를 수 있게 한다.
+private struct OriginalTranslateSwitch: View {
+    @Binding var displayMode: DisplayMode
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment("원문", isActive: displayMode == .original) { displayMode = .original }
+            segment("번역", isActive: displayMode != .original) { displayMode = .translation }
+        }
+        .padding(2)
+        .background(Color.secondary.opacity(0.15))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func segment(_ title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: isActive ? .bold : .regular))
+                .foregroundStyle(isActive ? Color.white : Color.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(isActive ? Color.accentColor : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -259,7 +270,7 @@ private struct StatusBar: View {
                 .foregroundStyle(.secondary)
                 .help(model.backend.webTranslator != nil ? "\(model.backend.title) 공식 웹페이지 — 외부 전송"
                       : model.backend.isExternal ? "\(model.backend.title) 웹 계정 — 외부 전송"
-                      : model.backend == .intelligence ? "Apple Intelligence 우선 — AI 사용 불가 시 기본 번역" : "Mac 기본 번역")
+                      : "Mac 기본 번역 + 가능하면 Apple Intelligence 다듬기")
             if model.sourceLanguageID == "auto", let key = model.documentLanguageKey {
                 Text("· 감지된 언어: \(AppModel.languageName(key))")
                     .foregroundStyle(.secondary)

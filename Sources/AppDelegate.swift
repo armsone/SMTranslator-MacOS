@@ -99,6 +99,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 앱 아이콘을 메뉴 막대 크기(18pt)로 축소한 이미지. 여백이 큰 전체 아이콘을 그대로 쓰면 다른
+    /// 메뉴 막대 아이콘보다 작아 보이므로, 아이콘의 둥근 사각형 부분만 중앙 크롭해 꽉 채운다.
+    private func menuBarIconImage() -> NSImage? {
+        guard let icon = NSApp.applicationIconImage else { return nil }
+        let size = NSSize(width: 18, height: 18)
+        let cropInset: CGFloat = icon.size.width * 0.085 // AppIcon-source.png 실측 여백 비율과 동일
+        let sourceRect = NSRect(x: cropInset, y: cropInset,
+                                 width: icon.size.width - cropInset * 2,
+                                 height: icon.size.height - cropInset * 2)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        icon.draw(in: NSRect(origin: .zero, size: size), from: sourceRect, operation: .sourceOver, fraction: 1)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
     // MARK: - 창 표시/숨김
 
     @objc private func showOverlay() {
@@ -127,10 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "translate", accessibilityDescription: "스크린 메일 번역기")
-                ?? NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "스크린 메일 번역기")
-            image?.isTemplate = true
-            button.image = image
+            // 메뉴 막대 아이콘은 SF Symbol 대신 기존 디자인된 앱 아이콘을 그대로 축소해 쓴다(원본 색 유지).
+            button.image = menuBarIconImage()
             button.toolTip = "스크린 메일 번역기 (화면 \(GlobalHotKey.displayString) · 메일 \(GlobalHotKey.mailDisplayString))"
         }
         let menu = NSMenu()
@@ -159,10 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let primary = item(viewModel.primaryAction.title, #selector(performPrimaryAction), symbol: viewModel.primaryAction.systemImage)
         primary.isEnabled = !viewModel.isProcessing
         menu.addItem(primary)
-        let fitItem = item("영역 맞추기", nil, symbol: "rectangle.dashed")
-        fitItem.submenu = fitMenu()
-        menu.addItem(fitItem)
-        menu.addItem(info(viewModel.status.koreanText))
+        if viewModel.status != .idle {
+            menu.addItem(info(viewModel.status.koreanText))
+        }
 
         menu.addItem(.separator())
         let mailItem = item("선택한 메일 번역", #selector(translateSelectedMail), symbol: "envelope")
@@ -171,30 +185,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("메일 번역 창 열기", #selector(showMailWindow), symbol: "envelope.open"))
 
         menu.addItem(.separator())
-        let methodItem = item("번역 방식: \(TranslationBackendStore.shared.backend.title)", nil, symbol: "arrow.left.arrow.right")
-        methodItem.submenu = backendMenu()
-        menu.addItem(methodItem)
         menu.addItem(item("설정…", #selector(showSettings), symbol: "gearshape"))
         menu.addItem(item("브라우저 번역…", #selector(showBrowserSetup), symbol: "globe"))
-
-        menu.addItem(.separator())
-        let dockItem = item("Dock에 아이콘 표시", #selector(toggleDockIcon), symbol: "dock.rectangle")
-        dockItem.state = DockVisibilityStore.shared.showDockIcon ? .on : .off
-        menu.addItem(dockItem)
-
-        menu.addItem(.separator())
-        if let warning = actionNeededWarningItem() {
-            menu.addItem(warning)
-        }
-        let options = item("옵션", nil, symbol: "switch.2")
-        options.submenu = optionsMenu()
-        menu.addItem(options)
         let status = item("앱 상태", nil, symbol: "info.circle")
         status.submenu = statusMenu()
         menu.addItem(status)
 
         menu.addItem(.separator())
+        if let warning = actionNeededWarningItem() {
+            menu.addItem(warning)
+        }
+        let dockItem = item("Dock에 아이콘 표시", #selector(toggleDockIcon), symbol: "dock.rectangle")
+        dockItem.state = DockVisibilityStore.shared.showDockIcon ? .on : .off
+        menu.addItem(dockItem)
+        let mailButton = item("Mail 위 번역 버튼 표시", #selector(toggleMailToolbarButton), symbol: "envelope.badge")
+        mailButton.state = MailToolbarButton.shared.isEnabled ? .on : .off
+        menu.addItem(mailButton)
+        let login = item("로그인 시 자동 시작", #selector(toggleLoginItem), symbol: "person.badge.key")
+        login.isEnabled = loginItem.isInstalledInApplications
+        switch loginItem.status {
+        case .enabled: login.state = .on
+        case .requiresApproval: login.state = .mixed
+        default: login.state = .off
+        }
+        menu.addItem(login)
+
+        menu.addItem(.separator())
         menu.addItem(item("스크린 메일 번역기 정보", #selector(showAbout), symbol: "questionmark.circle"))
+        menu.addItem(item("업데이트 확인…", #selector(checkForUpdates), symbol: "arrow.down.circle"))
         menu.addItem(item("스크린 메일 번역기 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
     }
 
@@ -228,71 +246,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return warning
     }
 
-    /// 켜고 끄는 항목(토글)과 업데이트 조작을 모아 메인 목록 길이를 줄인다.
-    private func optionsMenu() -> NSMenu {
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        let mailButton = item("Mail 위 번역 버튼 표시", #selector(toggleMailToolbarButton), symbol: nil)
-        mailButton.state = MailToolbarButton.shared.isEnabled ? .on : .off
-        submenu.addItem(mailButton)
-
-        submenu.addItem(.separator())
-        let login = item("로그인 시 자동 시작", #selector(toggleLoginItem), symbol: nil)
-        login.isEnabled = loginItem.isInstalledInApplications
-        switch loginItem.status {
-        case .enabled: login.state = .on
-        case .requiresApproval: login.state = .mixed
-        default: login.state = .off
-        }
-        submenu.addItem(login)
-        if loginItem.status == .requiresApproval {
-            submenu.addItem(item("로그인 항목 설정 열기…", #selector(openLoginItemsSettings), symbol: nil))
-        }
-
-        submenu.addItem(.separator())
-        let check = item("업데이트 확인…", #selector(checkForUpdates), symbol: nil)
-        check.isEnabled = updater.canCheckForUpdates
-        submenu.addItem(check)
-        let auto = item("자동 업데이트", #selector(toggleAutomaticUpdates), symbol: nil)
-        auto.isEnabled = updater.isAvailable
-        auto.state = updater.automaticallyUpdates ? .on : .off
-        submenu.addItem(auto)
-        return submenu
-    }
-
-    /// 화면 번역 창을 화면·다른 앱 창 크기에 맞춘다. 번역은 시작하지 않는다.
-    private func fitMenu() -> NSMenu {
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        let screen = item("화면에 맞추기", #selector(fitOverlayToScreen), symbol: "display")
-        screen.toolTip = "포인터가 있는 화면의 메뉴 막대와 Dock을 제외한 화면에 맞춥니다"
-        submenu.addItem(screen)
-        let window = item("현재 창에 맞추기", #selector(fitOverlayToWindow), symbol: "macwindow")
-        window.toolTip = "이 창 가운데 아래에 있는 다른 앱 창(없으면 맨 앞 창)의 크기와 위치에 맞춥니다"
-        submenu.addItem(window)
-        let restore = item("맞추기 전 크기로", #selector(restoreOverlayFrame), symbol: "arrow.uturn.backward")
-        restore.isEnabled = overlay.canRestoreFrameBeforeFit
-        submenu.addItem(restore)
-        submenu.addItem(.separator())
-        let tip = info("제목줄 빈 곳을 더블클릭하면 뒤에 겹쳐진 다른 앱 창 크기에 맞춥니다")
-        submenu.addItem(tip)
-        return submenu
-    }
-
-    @objc private func fitOverlayToScreen() {
-        if !overlay.isVisible { overlay.show(activate: true) }
-        overlay.fitToScreen()
-    }
-
-    @objc private func fitOverlayToWindow() {
-        if !overlay.isVisible { overlay.show(activate: true) }
-        if !overlay.fitToWindowBehind() { NSSound.beep() }
-    }
-
-    @objc private func restoreOverlayFrame() {
-        overlay.restoreFrameBeforeFit()
-    }
-
     /// 단축키 등록, 로그인 항목, 업데이트의 세부 진단 텍스트(평상시 숨겨둠)
     private func statusMenu() -> NSMenu {
         let submenu = NSMenu()
@@ -301,8 +254,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         submenu.addItem(info("메일 번역 단축키: \(mailHotKey?.statusDescription ?? "없음")"))
         submenu.addItem(.separator())
         submenu.addItem(info("로그인 항목: \(loginItem.lastError ?? loginItem.statusDescription)"))
+        if loginItem.status == .requiresApproval {
+            submenu.addItem(item("로그인 항목 설정 열기…", #selector(openLoginItemsSettings), symbol: nil))
+        }
         submenu.addItem(.separator())
         submenu.addItem(info("업데이트: \(updater.lastCheckResult ?? updater.statusDescription)"))
+        let auto = item("자동 업데이트", #selector(toggleAutomaticUpdates), symbol: nil)
+        auto.isEnabled = updater.isAvailable
+        auto.state = updater.automaticallyUpdates ? .on : .off
+        submenu.addItem(auto)
         return submenu
     }
 
@@ -338,28 +298,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.keyEquivalentModifierMask = mask
     }
 
-    /// 메일 번역과 화면 번역이 함께 쓰는 번역 방식 하위 메뉴
-    private func backendMenu() -> NSMenu {
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        let current = TranslationBackendStore.shared.backend
-        for backend in TranslationBackend.visibleCases {
-            if backend == .chatgpt || backend == .deepl { submenu.addItem(.separator()) }
-            let entry = NSMenuItem(title: "\(backend.title) — \(backend.detail)", action: #selector(selectBackend(_:)), keyEquivalent: "")
-            entry.target = self
-            entry.representedObject = backend.rawValue
-            entry.state = backend == current ? .on : .off
-            entry.isEnabled = backend != .intelligence || TranslationBackend.intelligenceSupported
-            submenu.addItem(entry)
-        }
-        return submenu
-    }
-
-    @objc private func selectBackend(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let backend = TranslationBackend(rawValue: raw) else { return }
-        TranslationBackendStore.shared.backend = backend
-    }
-
     @objc private func translateSelectedMail() {
         AppModel.shared.translateSelectedMail()
     }
@@ -386,11 +324,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func showSettings() {
-        MailWindowCoordinator.shared.showSettings()
+        MailWindowCoordinator.shared.showSettings(section: .general)
     }
 
     @objc private func showBrowserSetup() {
-        BrowserSetupWindowController.shared.show()
+        MailWindowCoordinator.shared.showSettings(section: .browser)
     }
 
     @objc private func toggleDockIcon() {
