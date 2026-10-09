@@ -1,8 +1,7 @@
 import SwiftUI
+import ServiceManagement
 
-// 일반 설정: 번역 방식 안내(고정값, 선택 불가), Dock·Mail 번역 버튼, 외부 AI 웹 계정 로그인 상태·로그인 창·
-// 브라우저 표시 방식·전송 동의·세션 삭제·진단 로그 공유. 브라우저 번역 설치는 같은 설정 창의 다른 탭에 있다(BrowserSetupView).
-// 앱 업데이트·로그인 시 자동 시작은 메뉴 막대 메뉴의 기존 항목이 담당한다(업데이터는 하나만 둔다).
+// 일반 설정: Dock·Mail 버튼·로그인 자동 시작. 브라우저 설치는 같은 창의 브라우저 탭에 둔다.
 
 struct AISettingsView: View {
     @State private var accounts = AIBIAccounts.shared
@@ -12,6 +11,10 @@ struct AISettingsView: View {
     @State private var dockVisibility = DockVisibilityStore.shared
     @State private var mailButtonEnabled = MailToolbarButton.shared.isEnabled
     @State private var confirmClear = false
+    @State private var loginItem = LoginItemManager()
+    @State private var loginEnabled = false
+    @State private var loginStatus = ""
+    @State private var loginNeedsApproval = false
 
     var body: some View {
         Form {
@@ -35,6 +38,24 @@ struct AISettingsView: View {
                 Text("Mail 연동")
             } footer: {
                 Text("Mail에서 선택한 메일을 번역하는 버튼입니다.")
+            }
+
+            Section {
+                Toggle("로그인 시 자동 시작", isOn: Binding(
+                    get: { loginEnabled },
+                    set: { enabled in
+                        loginItem.setEnabled(enabled)
+                        refreshLoginStatus()
+                    }
+                ))
+                .disabled(!loginItem.isInstalledInApplications)
+                if loginNeedsApproval {
+                    Button("로그인 항목 설정 열기") { loginItem.openSystemSettings() }
+                }
+            } header: {
+                Text("시작")
+            } footer: {
+                Text(loginStatus)
             }
 
             if TranslationBackend.externalOptionsVisible {
@@ -152,8 +173,15 @@ struct AISettingsView: View {
         }
         .onAppear {
             mailButtonEnabled = MailToolbarButton.shared.isEnabled
+            refreshLoginStatus()
             if TranslationBackend.externalOptionsVisible { accounts.refreshAll() }
         }
+    }
+
+    private func refreshLoginStatus() {
+        loginEnabled = loginItem.status == .enabled || loginItem.status == .requiresApproval
+        loginNeedsApproval = loginItem.status == .requiresApproval
+        loginStatus = loginItem.lastError ?? loginItem.statusDescription
     }
 
     @ViewBuilder

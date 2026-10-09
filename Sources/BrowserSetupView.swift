@@ -1,7 +1,7 @@
 import SwiftUI
 import Translation
 
-// 브라우저 번역 설정 창: 연결 허용(동의), Chrome·Whale 준비(확장 풀기 + 호스트 등록), Safari 확장 켜기 안내.
+// 브라우저 연결 확인, Chrome·Whale 설치 준비, Safari 확장 켜기 안내.
 // 확장 로드와 Safari 확장 켜기는 브라우저 화면에서 사용자가 직접 확인해야 한다(앱이 대신 켜지 않는다).
 
 struct BrowserSetupView: View {
@@ -12,8 +12,10 @@ struct BrowserSetupView: View {
         Form {
             Section {
                 HStack {
+                    Text("브라우저 연결")
                     Spacer()
-                    Button("새로고침") { integration.recoverConnection() }
+                    Button("연결 다시 확인") { integration.recoverConnection() }
+                        .help("SMT와 브라우저의 연결을 확인하고 복구합니다.")
                 }
                 if TranslationBackend.externalOptionsVisible {
                     HStack {
@@ -22,10 +24,6 @@ struct BrowserSetupView: View {
                         Button("설정 열기") { MailWindowCoordinator.shared.showSettings(section: .general) }
                     }
                 }
-            } header: {
-                Text("브라우저 번역")
-            } footer: {
-                Text("페이지와 이미지의 글자를 Mac에서 번역하고 다듬습니다.")
             }
 
             ForEach(BrowserIntegration.ChromiumBrowser.allCases) { browser in

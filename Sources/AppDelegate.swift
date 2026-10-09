@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         writeDiagnostics()
 
         // 모든 실행 경로(콜드/수동/로그인/브라우저)에서 화면 번역 창은 자동으로 띄우지 않는다.
-        // 메뉴·단축키·Dock/Finder 재실행(reopen) 등 명시적 동작에서만 overlay.show가 호출된다.
+        // 메뉴·단축키에서만 화면 번역 창을 연다. Dock/Finder 재실행도 숨김 상태를 유지한다.
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showOverlay()
+        // Finder/Dock 실행도 reopen으로 전달되므로 화면 번역 창을 자동으로 열지 않는다.
         return true
     }
 
@@ -195,22 +195,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let warning = actionNeededWarningItem() {
             menu.addItem(warning)
         }
-        let dockItem = item("Dock에 아이콘 표시", #selector(toggleDockIcon), symbol: "dock.rectangle")
-        dockItem.state = DockVisibilityStore.shared.showDockIcon ? .on : .off
-        menu.addItem(dockItem)
-        let mailButton = item("Mail 위 번역 버튼 표시", #selector(toggleMailToolbarButton), symbol: "envelope.badge")
-        mailButton.state = MailToolbarButton.shared.isEnabled ? .on : .off
-        menu.addItem(mailButton)
-        let login = item("로그인 시 자동 시작", #selector(toggleLoginItem), symbol: "person.badge.key")
-        login.isEnabled = loginItem.isInstalledInApplications
-        switch loginItem.status {
-        case .enabled: login.state = .on
-        case .requiresApproval: login.state = .mixed
-        default: login.state = .off
-        }
-        menu.addItem(login)
-
-        menu.addItem(.separator())
         menu.addItem(item("스크린 메일 번역기 정보", #selector(showAbout), symbol: "questionmark.circle"))
         menu.addItem(item("업데이트 확인…", #selector(checkForUpdates), symbol: "arrow.down.circle"))
         menu.addItem(item("스크린 메일 번역기 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
@@ -331,10 +315,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MailWindowCoordinator.shared.showSettings(section: .browser)
     }
 
-    @objc private func toggleDockIcon() {
-        DockVisibilityStore.shared.showDockIcon.toggle()
-    }
-
     /// ⌘W: 메일·설정·AI 브라우저 창이 앞에 있으면 그 창을 닫고, 아니면 화면 번역 창을 숨긴다.
     @objc private func closeFrontWindow() {
         if let key = NSApp.keyWindow, key !== overlay.panel, key.styleMask.contains(.closable) {
@@ -342,12 +322,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             overlay.hide()
         }
-    }
-
-    @objc private func toggleLoginItem() {
-        let enable = loginItem.status != .enabled && loginItem.status != .requiresApproval
-        loginItem.setEnabled(enable)
-        writeDiagnostics()
     }
 
     @objc private func openLoginItemsSettings() {
