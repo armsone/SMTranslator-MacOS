@@ -1,4 +1,4 @@
-# 스크린 메일 번역기 (SMTranslator) v0.7.2
+# 스크린 메일 번역기 (SMTranslator) v0.7.3
 
 - **소스**: [github.com/armsone/SMTranslator-MacOS](https://github.com/armsone/SMTranslator-MacOS) (공개)
 - **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/SMTranslator-MacOS/releases/latest)
@@ -325,7 +325,7 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
   업데이터를 시작하지 않고 메뉴에 이유를 표시합니다. 개인키는 저장소에 없으며 로그인 키체인에만 있습니다.
 - 피드가 아직 게시되지 않았거나(404 등) 받을 수 없으면 `업데이트 없음`이 아니라 Sparkle 오류로 표시됩니다.
 - [SMTranslator-MacOS](https://github.com/armsone/SMTranslator-MacOS/releases/latest)에서 최신 공개 버전과 설치 파일을 확인할 수 있습니다.
-  이 문서는 v0.7.2 기준입니다. 자동 업데이트의 실제 버전 교체
+  이 문서는 v0.7.3 기준입니다. 자동 업데이트의 실제 버전 교체
   동작은 아직 사용자 확인 전이며, 검증되었다고 단정하지 않습니다.
 
 ### 업데이트 배포 절차 (TM)

@@ -31,9 +31,12 @@ const CAPTURE_MIN_INTERVAL = 700; // Chrome captureVisibleTab 호출 빈도 제�
 const CAPTURE_TTL = 15000;
 const FONT_STYLES = ["auto", "gothic", "myeongjo", "gungseo", "hand"];
 const ICON_SIZES = [16, 32];
-// 오렌지(원문 보기)·파랑(번역, 번들 원본 그대로)은 같은 그림을 색만 바꾼 것이다(새 디자인이 아니라 기존
-// 아이콘의 색조만 회전). hue는 0~1 비율(표준 주황 약 30°).
-const ORANGE_HUE = 30 / 360;
+// 빨강(원문 보기)·파랑(번역, 번들 원본 그대로)은 같은 그림을 색만 바꾼 것이다(새 디자인이 아니라 기존
+// 아이콘의 색조만 회전). hue는 0~1 비율.
+const RED_HUE = 0;
+// 처리 중 회전 원형 화살표 오버레이의 프레임 수·간격(ms). 적은 프레임으로 가볍게 회전하는 느낌만 준다.
+const SPINNER_FRAMES = 8;
+const SPINNER_INTERVAL_MS = 150;
 const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [],
                    fontStyle: "auto" };
 
@@ -280,12 +283,12 @@ const native = {
   }
 };
 
-// MARK: - 툴바 아이콘·배지(원문 보기=오렌지, 번역 보기=기존 파랑, 처리 중=배지만) + 팝업 진행 스피너용 탭 상태
+// MARK: - 툴바 아이콘·배지(원문 보기=빨강, 번역 보기=기존 파랑, 처리 중=회전 원형 화살표 오버레이) + 팝업 진행 스피너용 탭 상태
 //
-// action.setIcon은 로컬 경로 또는 미리 만든 ImageData를 받는다(공식 문서: 애니메이션 아이콘은 권장하지 않음).
-// 그래서 여기서는 아이콘 색을 한 번만(탭당 상태가 바뀔 때만) 바꾸고, 실제 "처리 중" 표시는 배지 텍스트와
-// 팝업 안의 회전 스피너로만 한다(타이머로 반복 setIcon 하지 않음).
-// 오렌지 변형은 번들 아이콘 자체의 색조(hue)만 돌려 만든다(채도·명도는 그대로 둬 음영·외곽선을 보존) —
+// 처리 중(running)이 최우선이다: 기존 아이콘 위에 작은 회전 원형 화살표를 오버레이해 setInterval로 몇 프레임만
+// 반복 setIcon 한다(끝나면·취소·오류여도 content.js의 finally가 항상 running:false를 보내 바로 멈춘다).
+// 처리 중이 아닐 때는 원문 보기=빨강 오버레이, 번역 보기=기존 파랑(그대로)로 한 번만 바뀐다.
+// 빨강 변형은 번들 아이콘 자체의 색조(hue)만 돌려 만든다(채도·명도는 그대로 둬 음영·외곽선을 보존) —
 // 새 그림을 생성하지 않고 지금 아이콘을 그대로 알아볼 수 있게 한다.
 
 function rgbToHsl(r, g, b) {
@@ -318,16 +321,64 @@ function hslToRgb(h, s, l) {
   return [Math.round(hue(h + 1 / 3) * 255), Math.round(hue(h) * 255), Math.round(hue(h - 1 / 3) * 255)];
 }
 
-/** imageData를 제자리에서 오렌지 색조로 돌린다. 채도·명도·투명도는 그대로 둔다(모양·세부는 그대로). */
-function tintToOrange(imageData) {
+/** imageData를 제자리에서 지정한 색조(hue)로 돌린다. 채도·명도·투명도는 그대로 둔다(모양·세부는 그대로). */
+function tintToHue(imageData, hue) {
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] === 0) continue;
     const [, s, l] = rgbToHsl(data[i], data[i + 1], data[i + 2]);
-    const [r, g, b] = hslToRgb(ORANGE_HUE, s, l);
+    const [r, g, b] = hslToRgb(hue, s, l);
     data[i] = r; data[i + 1] = g; data[i + 2] = b;
   }
   return imageData;
+}
+
+/** 기존 아이콘(base) 중앙에 얇은 회전 원형 화살표(처리 중 표시)를 겹쳐 한 프레임을 만든다.
+ *  angle은 라디안(화살표 진행 방향). 배경 원판 없이 얇은 흰 선 + 어두운 외곽선만으로 가독성을 준다. */
+function drawSpinnerFrame(base, size, angle) {
+  const canvas = new OffscreenCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(base, 0, 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size * 0.335;
+  const lineWidth = Math.max(1, size * 0.09);
+  const arcRadius = r - lineWidth / 2;
+  const tipAngle = Math.PI * 1.5;
+  const tipX = arcRadius * Math.cos(tipAngle);
+  const tipY = arcRadius * Math.sin(tipAngle);
+  const headLen = size * 0.1;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.lineWidth = lineWidth + Math.max(1, size * 0.045);
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.arc(0, 0, arcRadius, 0, tipAngle);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#FFFFFF";
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  ctx.arc(0, 0, arcRadius, 0, tipAngle);
+  ctx.stroke();
+
+  // 화살촉: 호의 끝(각도 1.5π)에서 접선 방향을 가리키는 작은 삼각형.
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX - headLen, tipY - headLen * 0.4);
+  ctx.lineTo(tipX - headLen * 0.2, tipY + headLen);
+  ctx.closePath();
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.lineWidth = Math.max(1, size * 0.045);
+  ctx.stroke();
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fill();
+  ctx.restore();
+  return ctx.getImageData(0, 0, size, size);
 }
 
 async function loadIconImageData(path, size) {
@@ -339,7 +390,7 @@ async function loadIconImageData(path, size) {
   return ctx.getImageData(0, 0, size, size);
 }
 
-/** 16/32 두 크기의 파랑(원본)·오렌지(색조 회전) ImageData를 한 번만 만들어 둔다. OffscreenCanvas·
+/** 16/32 두 크기의 파랑(원본)·빨강(색조 회전)·처리 중 회전 프레임 ImageData를 한 번만 만들어 둔다. OffscreenCanvas·
  *  createImageBitmap·action.setIcon 중 하나라도 없으면(구버전 Safari 등) null — 그 경우 토글 아이콘 색은
  *  바뀌지 않고 팝업 스피너·상태만으로 안내한다(기능이 조용히 깨지지 않는다). */
 const iconReady = (async () => {
@@ -347,35 +398,69 @@ const iconReady = (async () => {
     if (typeof OffscreenCanvas !== "function" || typeof createImageBitmap !== "function" ||
         typeof api.action?.setIcon !== "function") return null;
     const blue = {};
-    const orange = {};
+    const red = {};
+    const spinner = {};
     for (const size of ICON_SIZES) {
       const base = await loadIconImageData(`icons/icon${size}.png`, size);
       blue[size] = base;
-      orange[size] = tintToOrange(new ImageData(new Uint8ClampedArray(base.data), base.width, base.height));
+      red[size] = tintToHue(new ImageData(new Uint8ClampedArray(base.data), base.width, base.height), RED_HUE);
+      spinner[size] = Array.from({ length: SPINNER_FRAMES }, (_, i) =>
+        drawSpinnerFrame(base, size, (i / SPINNER_FRAMES) * Math.PI * 2));
     }
-    return { blue, orange };
+    return { blue, red, spinner };
   } catch {
     return null;
   }
 })();
 
-const tabProgress = new Map(); // tabId → { view: "translated"|"original", running: boolean }
+const tabProgress = new Map(); // tabId → { view: "translated"|"original", running: boolean, timer: number|0, frame: number }
 
-/** 탭 하나의 툴바 아이콘·배지·툴팁을 실제 상태에 맞춘다. 탭이 이미 닫혀 사라졌으면 조용히 무시한다. */
+function stopSpinner(info) {
+  if (info.timer) {
+    clearInterval(info.timer);
+    info.timer = 0;
+    info.frame = 0;
+  }
+}
+
+/** 탭 하나의 툴바 아이콘·배지·툴팁을 실제 상태에 맞춘다. 탭이 이미 닫혀 사라졌으면 조용히 무시한다.
+ *  처리 중(running)이 최우선: 회전 원형 화살표 오버레이를 setInterval로 몇 프레임만 반복 그린다.
+ *  처리 중이 끝나면(완료·취소·오류 모두 content.js가 running:false로 알려줌) 타이머를 바로 멈추고
+ *  원문 보기=빨강, 번역 보기=기존 파랑으로 한 번만 되돌린다. */
 async function updateTabIcon(tabId) {
-  const info = tabProgress.get(tabId) || { view: "translated", running: false };
+  const info = tabProgress.get(tabId) || { view: "original", running: false, timer: 0, frame: 0 };
+  tabProgress.set(tabId, info);
   const icons = await iconReady;
-  if (icons) {
-    const variant = info.view === "original" ? icons.orange : icons.blue;
-    try { await api.action.setIcon({ tabId, imageData: variant }); } catch { /* 탭이 닫혔을 수 있음 */ }
+  if (tabProgress.get(tabId) !== info) return;
+  if (!info.running) {
+    stopSpinner(info);
+    if (icons) {
+      const variant = info.view === "original" ? icons.red : icons.blue;
+      try { await api.action.setIcon({ tabId, imageData: variant }); } catch { /* 탭이 닫혔을 수 있음 */ }
+    }
+  } else if (icons && !info.timer) {
+    const paintFrame = async () => {
+      if (tabProgress.get(tabId) !== info || !info.running) {
+        stopSpinner(info);
+        return;
+      }
+      const frames = icons.spinner;
+      const data = {};
+      for (const size of ICON_SIZES) data[size] = frames[size][info.frame % SPINNER_FRAMES];
+      try {
+        await api.action.setIcon({ tabId, imageData: data });
+      } catch {
+        stopSpinner(info); // 탭이 닫혔을 수 있음
+        return;
+      }
+      info.frame = (info.frame + 1) % SPINNER_FRAMES;
+    };
+    // 첫 프레임을 기다리기 전에 핸들을 저장해 중복 생성·종료 직후 재시작을 막는다.
+    info.timer = setInterval(paintFrame, SPINNER_INTERVAL_MS);
+    await paintFrame();
   }
   if (typeof api.action?.setBadgeText === "function") {
-    try {
-      await api.action.setBadgeText({ tabId, text: info.running ? "···" : "" });
-      if (info.running && typeof api.action.setBadgeBackgroundColor === "function") {
-        await api.action.setBadgeBackgroundColor({ tabId, color: "#FF8A00" });
-      }
-    } catch { /* 무시 */ }
+    try { await api.action.setBadgeText({ tabId, text: "" }); } catch { /* 무시 */ }
   }
   if (typeof api.action?.setTitle === "function") {
     const title = info.running ? "SMT 웹 번역 — 번역 중…" : "SMT 웹 번역";
@@ -388,7 +473,12 @@ async function updateTabIcon(tabId) {
 function handleProgress(message, sender) {
   const tabId = sender.tab?.id;
   if (!Number.isInteger(tabId)) return;
-  tabProgress.set(tabId, { view: message.view === "original" ? "original" : "translated", running: message.running === true });
+  // 타이머 콜백과 맵이 같은 상태 객체를 유지해야 종료 때 모든 타이머를 멈출 수 있다.
+  const info = tabProgress.get(tabId) || { timer: 0, frame: 0 };
+  info.view = message.view === "original" ? "original" : "translated";
+  info.running = message.running === true;
+  if (!info.running) stopSpinner(info);
+  tabProgress.set(tabId, info);
   updateTabIcon(tabId).catch(() => {});
 }
 
@@ -933,8 +1023,10 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status === "loading") {
     captures.delete(tabId);
     native.cancelTab(tabId);
-    // 새로 불러오는 페이지는 아직 번역한 적이 없으므로 이전 페이지의 아이콘·배지(오렌지·처리 중 표시 등)가
+    // 새로 불러오는 페이지는 아직 번역한 적이 없으므로 이전 페이지의 아이콘·회전 오버레이가
     // 그대로 남지 않게 기본 상태로 되돌린다(내용 스크립트가 다시 붙을 때까지 기다리지 않음).
+    const previous = tabProgress.get(tabId);
+    if (previous) stopSpinner(previous);
     tabProgress.delete(tabId);
     updateTabIcon(tabId).catch(() => {});
   }
@@ -945,6 +1037,8 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
 api.tabs.onRemoved.addListener((tabId) => {
   captures.delete(tabId);
   native.cancelTab(tabId);
+  const previous = tabProgress.get(tabId);
+  if (previous) stopSpinner(previous);
   tabProgress.delete(tabId);
   // 자동 번역 중이던 번역 창(탭)이 모두 닫히면 자동 번역도 함께 끈다(다음에 새로 여는 탭에서는 다시 켜지지 않음).
   // 남은 탭이 없는지는 다음 실행 루프에서 확인한다(onRemoved 시점에는 닫히는 탭이 아직 목록에 남아 있을 수 있음).
@@ -989,3 +1083,26 @@ api.runtime.onStartup?.addListener(async () => {
 
 // 워커가 깨어날 때마다(설치·업데이트 포함) 저장 상태를 실제 권한에 맞춘다. 이전 버전의 http/https 권한만 있던 켜짐은 여기서 꺼진다.
 reconcile().catch(() => {});
+
+// 새 탭의 기본 툴바 아이콘(아직 특정 탭에 맞춰지기 전)을 빨강(원문 보기)으로 둔다 — 그래야 막 연 탭이
+// 내용 스크립트가 붙기 전까지 잠깐이라도 기존 파랑으로 보이지 않는다. tabId 없이 설정하면 전역 기본값이 된다.
+iconReady.then((icons) => {
+  if (icons && typeof api.action?.setIcon === "function") {
+    api.action.setIcon({ imageData: icons.red }).catch(() => {});
+  }
+}).catch(() => {});
+
+// 워커가 막 시작했을 때(설치·업데이트·재시작 포함) 이미 열려 있는 탭들의 실제 상태(번역 보기·처리 중 여부)를
+// 내용 스크립트에 물어 tabProgress를 채운다. 응답이 없으면(아직 안 붙음·보호된 페이지 등) 기본값(원문·빨강)을
+// 그대로 둔다 — invent하지 않고 content.js의 state 응답에 있는 view·running 필드만 그대로 쓴다.
+(async () => {
+  let tabs = [];
+  try { tabs = await api.tabs.query({}); } catch { tabs = []; }
+  await Promise.all(tabs.filter((tab) => Number.isInteger(tab.id)).map(async (tab) => {
+    const page = await sendToTab(tab.id, { cmd: "state" });
+    // 조회 중 새 진행 메시지나 페이지 이동이 들어왔으면 그 최신 상태를 보존한다.
+    if (page && !tabProgress.has(tab.id)) tabProgress.set(tab.id, { view: page.view === "original" ? "original" : "translated",
+                                         running: page.running === true, timer: 0, frame: 0 });
+    updateTabIcon(tab.id).catch(() => {});
+  }));
+})().catch(() => {});

@@ -44,7 +44,7 @@
     target: "ko",
     engine: LOCAL_ENGINE,
     fontStyle: "auto",
-    view: "translated",
+    view: "original",
     pageGen: 0,   // 이동·언어 변경 때 증가: 이전 결과 모두 무효
     scrollGen: 0, // 스크롤·크기 변경 때 증가: 이전 이미지 결과 무효
     url: location.href,
@@ -1366,7 +1366,8 @@
           clearTimeout(state.timer);
           state.timer = 0;
           runPass(true);
-        } else if (state.auto && state.view === "translated") {
+        } else if (state.auto) {
+          setView("translated");
           schedule();
         }
         sendResponse(snapshot());
