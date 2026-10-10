@@ -151,7 +151,7 @@ final class BrowserHostedTranslator: BrowserTextTranslating {
             self.currentKey = nil
             for work in failed {
                 work.continuation.resume(throwing: BrowserEngineError.translationFailed(
-                    "번역 세션을 시작하지 못했습니다. SMT 화면 번역에서 같은 언어로 한 번 번역한 뒤 다시 시도하세요."))
+                    "번역 세션을 시작하지 못했습니다. Barobogi 화면 번역에서 같은 언어로 한 번 번역한 뒤 다시 시도하세요."))
             }
         }
     }

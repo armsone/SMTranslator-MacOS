@@ -1,7 +1,7 @@
-# 스크린 메일 번역기 (SMTranslator) v0.7.3
+# 바로보기 (Barobogi) v0.7.5
 
-- **소스**: [github.com/armsone/SMTranslator-MacOS](https://github.com/armsone/SMTranslator-MacOS) (공개)
-- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/SMTranslator-MacOS/releases/latest)
+- **소스**: [github.com/armsone/Barobogi-MacOS](https://github.com/armsone/Barobogi-MacOS) (공개)
+- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/Barobogi-MacOS/releases/latest)
   — Developer ID 서명 및 Apple 공증(notarization)을 거친 Apple Silicon(arm64) 전용 빌드입니다.
 - **요구 사항**: macOS 15 이상, Apple Silicon(arm64) Mac. Intel(x86_64)은 지원하지 않습니다.
 
@@ -129,7 +129,7 @@ macOS 15 이상용 네이티브 앱입니다. 하나의 앱 안에 세 기능이
 - **일반 설정**: Dock 아이콘 표시(기본 꺼짐), Mail 위 번역 버튼, 로그인 시 자동 시작을 한곳에서 변경합니다.
 - **앱 시작**: 화면 번역 창을 자동으로 열지 않습니다. Finder나 Dock에서 앱을 다시 열어도 숨긴 창은 그대로 두며,
   메뉴 막대 또는 ⌃⌥⇧⌘T로 필요할 때 엽니다.
-- **브라우저 연결**: 브라우저 설정의 `연결 다시 확인`은 SMT와 브라우저 사이의 연결을 확인·복구합니다.
+- **브라우저 연결**: 브라우저 설정의 `연결 다시 확인`은 Barobogi와 브라우저 사이의 연결을 확인·복구합니다.
   웹페이지를 새로고침하는 버튼이 아닙니다.
 
 ## 메일 번역
@@ -177,20 +177,20 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
   설정 없음). 리스너가 절전 복귀나 드문 치명적 오류로 죽어도 이미 접속된 다른 브라우저·탭·진행 중인 번역은 건드리지
   않은 채 리스너만 조용히 되살리려 시도합니다(시스템 깨어남, 도우미의 복구 요청 신호가 계기). `브라우저 번역` 탭의
   `새로고침` 버튼을 누르면 리스너가 실제로 죽어 있을 때만 같은 방식으로 다시 열고, 이미 정상이면 아무 것도 바꾸지
-  않습니다. 반복 실패하면 더 이상 자동 재시도하지 않고 SMT를 다시 시작하라고 안내합니다.
-- **Safari**(macOS 26 이상 + 해당 언어의 번역 언어 팩 설치 필요): 확장이 SMT 앱 안에 들어 있어 별도 설치가 없습니다.
-  SMT를 `/Applications`에서 한 번 실행한 뒤 Safari › 설정 › 확장 프로그램에서 `SMT 웹 번역`을 켜고 웹 사이트 접근을
+  않습니다. 반복 실패하면 더 이상 자동 재시도하지 않고 Barobogi를 다시 시작하라고 안내합니다.
+- **Safari**(macOS 26 이상 + 해당 언어의 번역 언어 팩 설치 필요): 확장이 Barobogi 앱 안에 들어 있어 별도 설치가 없습니다.
+  Barobogi를 `/Applications`에서 한 번 실행한 뒤 Safari › 설정 › 확장 프로그램에서 `Barobogi 웹 번역`을 켜고 웹 사이트 접근을
   허용하면 됩니다. Safari는 앱 본체와 통신하지 않고 확장 프로세스 안에서 화면 없이 직접 번역하므로, macOS 26 미만이거나
   언어 팩이 없으면 안내만 뜨고 동작하지 않습니다(이 경우 Chrome·Whale 사용).
-- **번역 언어 팩**: 확장 팝업의 `언어팩` 버튼을 누르면 SMT 앱 안에서 원문→번역 언어쌍을 고르고 `받기`를 누르는
+- **번역 언어 팩**: 확장 팝업의 `언어팩` 버튼을 누르면 Barobogi 앱 안에서 원문→번역 언어쌍을 고르고 `받기`를 누르는
   다운로드 시트가 바로 열립니다(이미 설치돼 있으면 화면 변화 없이 바로 끝남). Safari 확장은 앱 본체와 통신할 수 없어
-  대신 SMT 앱을 실행시키고, 앱 안의 같은 다운로드 화면을 쓰라고 안내합니다.
+  대신 Barobogi 앱을 실행시키고, 앱 안의 같은 다운로드 화면을 쓰라고 안내합니다.
 - **팝업**: 위쪽에 `원문 보기`/`번역 보기` 큰 전환 스위치가 있어 지금 상태 쪽이 강조됩니다. 번역 언어, 번역 글꼴
   (DOM 텍스트와 이미지 속 글자 양쪽에 적용, 자동/고딕/명조/궁서/손글씨), 언어팩 버튼이 그 아래 있습니다. 이미지 속
   글자 번역은 항상 켜져 있습니다(끄는 옵션 없음). 번역·인식·다듬기가 실제로 진행 중일 때만 상태 줄에 작은 회전
   스피너가 돕니다(감시만 하는 동안은 돌지 않음, 가짜 진행률 없음).
 - **툴바 아이콘**: 지금 탭이 원문이면 주황, 번역이면 기존 파랑(둘 다 번들 아이콘 자체의 색조만 바꾼 것)이며, 실제
-  처리 중에는 배지(`···`)가 추가로 붙습니다. 툴바의 SMT 아이콘을 눌러 팝업을 열 때마다(팝업이 열리는 그 순간 한
+  처리 중에는 배지(`···`)가 추가로 붙습니다. 툴바의 Barobogi 아이콘을 눌러 팝업을 열 때마다(팝업이 열리는 그 순간 한
   번만) 지금 탭의 원문 ↔ 번역을 토글합니다 — 다른 탭의 전역 자동 번역 상태는 건드리지 않습니다.
 - **동작**: 팝업의 `번역 보기`를 누르면 그 자리에서 번역하고 전역 자동 번역을 켭니다. Chrome·Whale은 이때 선택 권한
   `<all_urls>`(브라우저 확인 창의 '모든 웹사이트의 데이터 읽기 및 변경')를 그 클릭 안에서 요청합니다. Chrome 문서상
@@ -216,7 +216,7 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
   언어 판별 결과를 언어별 문장 수(텍스트 조각·OCR 문단 단위, 툴팁에 표시)로 보여줍니다. 번역 성공 여부와 무관하게
   언어 팩이 없어 건너뛴 조각·문단도 인식됐으면 포함되고, 숫자·기호만 있는 조각은 빠집니다. 문장 수는 마침표 등으로
   다시 나누지 않고 기존 번역 단위(텍스트 노드·OCR 문단) 수 그대로이며, 같은 조각·이미지를 다시 번역해도 중복으로
-  더해지지 않고 그 조각의 최신 판별 결과로 교체됩니다. 구버전 SMT 앱과 연결된 경우 이 통계는 지어내지 않고 숨겨집니다.
+  더해지지 않고 그 조각의 최신 판별 결과로 교체됩니다. 구버전 Barobogi 앱과 연결된 경우 이 통계는 지어내지 않고 숨겨집니다.
 - **동의·저장**: 확장에서도 처음 한 번 동의를 받습니다. 동의 전에는 어떤 페이지도 번역하지 않습니다. 보낸 페이지
   글자·캡처 이미지는 번역 후 바로 버리며 저장하지 않습니다.
 - **제한**: Chrome 계열은 스토어 미배포라 확장 로드·호스트 등록 상태를 브라우저에서 직접 확인해야 하며, 외부 AI
@@ -295,7 +295,7 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
   캡처 전에 가용성을 확인하지 않고, 화면에서 실제로 감지한 언어를 번역할 때 그 언어 조합만 안내됩니다.
 - **Mail 자동화(Apple Events)**: 선택한 메일 번역을 실행할 때만 Mail의 선택 메시지 원본을 읽기 위해 사용합니다.
   처음 실행 시 macOS가 `Mail 제어` 허용 여부를 한 번 묻습니다(허용은 사용자의 선택이며 앱이 반복해서 묻거나 설정을
-  바꾸지 않음). 거부했다면 시스템 설정 › 개인정보 보호 및 보안 › 자동화 › 스크린 메일 번역기 › Mail에서 직접 허용하거나
+  바꾸지 않음). 거부했다면 시스템 설정 › 개인정보 보호 및 보안 › 자동화 › 바로보기 › Mail에서 직접 허용하거나
   `.eml 파일 열기`를 쓸 수 있습니다. 앱은 `com.apple.security.automation.apple-events` 권한 항목만 추가로 가지며
   Hardened Runtime과 라이브러리 검증은 그대로입니다.
 - **손쉬운 사용**: 요청하지 않습니다(`AXIsProcessTrusted`로 확인만 하며 권한 요청 대화상자를 띄우는 호출은 쓰지 않음).
@@ -320,11 +320,11 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
 - 표준 `SPUStandardUpdaterController` 사용. 기본값: `SUEnableAutomaticChecks=YES`, `SUAutomaticallyUpdate=YES`,
   `SUVerifyUpdateBeforeExtraction=YES`, 시스템 프로파일링 끔. 메뉴에서 자동 업데이트를 끌 수 있습니다.
 - 피드: `update-config.env`의 `SPARKLE_FEED_URL`
-  (`https://github.com/armsone/SMTranslator-MacOS/releases/latest/download/appcast.xml`).
+  (`https://github.com/armsone/Barobogi-MacOS/releases/latest/download/appcast.xml`).
 - 빌드 시 `Resources/UpdatePublicKey.txt`(EdDSA **공개키**)를 `SUPublicEDKey`로 넣습니다. 공개키나 HTTPS 피드가 없으면
   업데이터를 시작하지 않고 메뉴에 이유를 표시합니다. 개인키는 저장소에 없으며 로그인 키체인에만 있습니다.
 - 피드가 아직 게시되지 않았거나(404 등) 받을 수 없으면 `업데이트 없음`이 아니라 Sparkle 오류로 표시됩니다.
-- [SMTranslator-MacOS](https://github.com/armsone/SMTranslator-MacOS/releases/latest)에서 최신 공개 버전과 설치 파일을 확인할 수 있습니다.
+- [Barobogi-MacOS](https://github.com/armsone/Barobogi-MacOS/releases/latest)에서 최신 공개 버전과 설치 파일을 확인할 수 있습니다.
   이 문서는 v0.7.3 기준입니다. 자동 업데이트의 실제 버전 교체
   동작은 아직 사용자 확인 전이며, 검증되었다고 단정하지 않습니다.
 
@@ -344,7 +344,7 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
 요구 사항: Xcode 커맨드라인 도구, macOS 15 이상 SDK, 키체인의 Developer ID Application 인증서.
 
 ```bash
-./build.sh            # → build/SMTranslator.app
+./build.sh            # → build/Barobogi.app
 ```
 
 `build.sh`가 하는 일:
@@ -415,7 +415,7 @@ Sources/
   MailBridge.swift             Mail 선택 메시지 원본 읽기(AppleScript)
   MailToolbarButton.swift      Mail 위 번역 버튼
   # 브라우저 번역(0.4.0, 신규)
-  BrowserProtocol.swift        확장 ↔ SMT 연결 공통 상수·프레임 입출력·서명 확인(앱·네이티브 메시징 도우미·Safari 확장 공용)
+  BrowserProtocol.swift        확장 ↔ Barobogi 연결 공통 상수·프레임 입출력·서명 확인(앱·네이티브 메시징 도우미·Safari 확장 공용)
   BrowserEngineCore.swift      브라우저 번역 엔진(요청 검증 + Mac 기본 번역, 앱·Safari 확장 공용)
   AppleTranslationRefiner.swift Apple Intelligence(온디바이스) 번역문 다듬기(기본 켜짐, 화면·메일·Chrome·Whale 공용)
   BrowserBridgeServer.swift    Chrome·Whale 네이티브 메시징 도우미가 접속하는 Unix 소켓 서버

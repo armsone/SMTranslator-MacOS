@@ -15,7 +15,7 @@ struct BrowserSetupView: View {
                     Text("브라우저 연결")
                     Spacer()
                     Button("연결 다시 확인") { integration.recoverConnection() }
-                        .help("SMT와 브라우저의 연결을 확인하고 복구합니다.")
+                        .help("Barobogi와 브라우저의 연결을 확인하고 복구합니다.")
                 }
                 if TranslationBackend.externalOptionsVisible {
                     HStack {
@@ -101,7 +101,7 @@ struct BrowserSetupView: View {
         } header: {
             Text(browser.title)
         } footer: {
-            Text("설치 후 확장을 로드하고, SMT 업데이트 뒤 새로고침하세요.")
+            Text("설치 후 확장을 로드하고, Barobogi 업데이트 뒤 새로고침하세요.")
         }
     }
 
@@ -111,7 +111,7 @@ struct BrowserSetupView: View {
             installStep(2, "folder", "폴더 선택 창에서 ⌘⇧G를 누르세요.")
             installStep(3, "doc.on.clipboard", "⌘V로 경로를 붙여넣고 엔터를 누르세요.")
             installStep(4, "checkmark.circle", "'선택'을 눌러 확장을 로드하세요.")
-            installStep(5, "puzzlepiece.extension", "SMT 아이콘을 눌러 Mac 연결에 동의하세요.")
+            installStep(5, "puzzlepiece.extension", "Barobogi 아이콘을 눌러 Mac 연결에 동의하세요.")
         }
         .padding(.vertical, 4)
     }

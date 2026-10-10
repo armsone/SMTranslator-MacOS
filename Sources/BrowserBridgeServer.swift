@@ -33,7 +33,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard listenFD < 0 else { return nil }
         guard let team = BrowserCodeSigning.ownTeamID() else {
-            return "이 앱 빌드에 Developer ID 서명(팀 ID)이 없어 브라우저 연결을 열지 않았습니다. 서명된 SMT를 /Applications에 설치해 실행하세요."
+            return "이 앱 빌드에 Developer ID 서명(팀 ID)이 없어 브라우저 연결을 열지 않았습니다. 서명된 Barobogi를 /Applications에 설치해 실행하세요."
         }
         guard let path = BrowserBridge.socketPath() else {
             return "브라우저 연결용 소켓 경로를 만들 수 없습니다."
@@ -125,7 +125,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
             guard BrowserCodeSigning.peerIsTrusted(fd: client, identifier: BrowserBridge.helperIdentifier, teamID: team) else {
                 try? BrowserFrameIO.writeFrame(client, BrowserBridge.errorFrame(
                     code: "untrusted_client",
-                    message: "SMT와 같은 서명을 가진 도우미만 연결할 수 있습니다. SMT를 다시 설치하고 '브라우저 번역…'에서 다시 준비하세요."))
+                    message: "Barobogi와 같은 서명을 가진 도우미만 연결할 수 있습니다. Barobogi를 다시 설치하고 '브라우저 번역…'에서 다시 준비하세요."))
                 close(client)
                 continue
             }
@@ -143,7 +143,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
             lock.unlock()
 
             let thread = Thread { [weak self] in self?.serve(connectionID: id, fd: client) }
-            thread.name = "SMT browser connection \(id)"
+            thread.name = "Barobogi browser connection \(id)"
             thread.start()
         }
     }
@@ -214,7 +214,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
         let connected = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(probe, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        if connected == 0 { return "다른 SMT 실행본이 이미 브라우저 연결을 제공하고 있습니다." }
+        if connected == 0 { return "다른 Barobogi 실행본이 이미 브라우저 연결을 제공하고 있습니다." }
         unlink(path)
         return nil
     }

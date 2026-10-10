@@ -146,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let button = item.button {
             // 메뉴 막대 아이콘은 SF Symbol 대신 기존 디자인된 앱 아이콘을 그대로 축소해 쓴다(원본 색 유지).
             button.image = menuBarIconImage()
-            button.toolTip = "스크린 메일 번역기 (화면 \(GlobalHotKey.displayString) · 메일 \(GlobalHotKey.mailDisplayString))"
+            button.toolTip = "바로보기 (화면 \(GlobalHotKey.displayString) · 메일 \(GlobalHotKey.mailDisplayString))"
         }
         let menu = NSMenu()
         menu.delegate = self
@@ -195,15 +195,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let warning = actionNeededWarningItem() {
             menu.addItem(warning)
         }
-        menu.addItem(item("스크린 메일 번역기 정보", #selector(showAbout), symbol: "questionmark.circle"))
+        menu.addItem(item("바로보기 정보", #selector(showAbout), symbol: "questionmark.circle"))
         menu.addItem(item("업데이트 확인…", #selector(checkForUpdates), symbol: "arrow.down.circle"))
-        menu.addItem(item("스크린 메일 번역기 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
+        menu.addItem(item("바로보기 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
     }
 
     /// 앱 아이콘·이름·버전을 보여주는 비활성 머리글 행
     private func headerItem() -> NSMenuItem {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-        let title = version.isEmpty ? "SMTranslator" : "SMTranslator v\(version)"
+        let title = version.isEmpty ? "Barobogi" : "Barobogi v\(version)"
         let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         header.isEnabled = false
         if let icon = NSApp.applicationIconImage {
@@ -348,14 +348,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(item("스크린 메일 번역기 정보", #selector(showAbout)))
+        appMenu.addItem(item("바로보기 정보", #selector(showAbout)))
         appMenu.addItem(item("업데이트 확인…", #selector(checkForUpdates)))
         appMenu.addItem(.separator())
         let settings = NSMenuItem(title: "설정…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
-        appMenu.addItem(NSMenuItem(title: "스크린 메일 번역기 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appMenu.addItem(NSMenuItem(title: "바로보기 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
 

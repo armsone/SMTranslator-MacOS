@@ -1,5 +1,5 @@
 #!/bin/bash
-# SMTranslator.app 빌드 스크립트
+# Barobogi.app 빌드 스크립트
 # 사용법: ./build.sh
 #   SIGN_IDENTITY  : 서명 인증서 SHA1 (기본: 기존 Developer ID Application, 팀 T7B4EPLHPK)
 #   SIGN_TIMESTAMP : 1이면 보안 타임스탬프 포함(배포/공증용, 네트워크 필요)
@@ -7,9 +7,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
-APP_NAME="SMTranslator"
+APP_NAME="Barobogi"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-EXECUTABLE_NAME="SMTranslator"
+EXECUTABLE_NAME="Barobogi"
 BUNDLE_ID="com.local.screentranslator"
 SPARKLE_DIR="$ROOT_DIR/Vendor/Sparkle"
 # 앱 본체 권한: Mail 선택 메시지 읽기용 Apple Events만(hardened runtime 유지, 라이브러리 검증 완화 없음)

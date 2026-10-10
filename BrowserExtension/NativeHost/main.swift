@@ -3,9 +3,9 @@ import CoreFoundation
 import Darwin
 import Foundation
 
-// SMTBrowserHost — Chrome·Whale 네이티브 메시징 호스트(SMTranslator.app/Contents/Helpers 안).
-// 브라우저가 확장의 connectNative로 실행한다. 직접 번역하지 않고, 같은 팀으로 서명된 SMT 앱의
-// 사용자 전용 Unix 소켓 엔진에 메시지를 그대로 중계한다. SMT가 꺼져 있으면 화면 번역 창 없이 백그라운드로 실행한다.
+// SMTBrowserHost — Chrome·Whale 네이티브 메시징 호스트(Barobogi.app/Contents/Helpers 안).
+// 브라우저가 확장의 connectNative로 실행한다. 직접 번역하지 않고, 같은 팀으로 서명된 Barobogi 앱의
+// 사용자 전용 Unix 소켓 엔진에 메시지를 그대로 중계한다. Barobogi가 꺼져 있으면 화면 번역 창 없이 백그라운드로 실행한다.
 // - 허용된 확장 출처(argv[1])가 아니면 바로 끝낸다.
 // - 요청 크기 상한(16MB)·응답 크기 상한(1MB, Chrome 규약)을 지킨다. 내용은 기록하지 않는다.
 
@@ -42,7 +42,7 @@ func connectEngine() -> Int32? {
     return fd
 }
 
-/// 이 도우미가 들어 있는 SMT 앱(…/SMTranslator.app/Contents/Helpers/SMTBrowserHost)을 활성화 없이 실행한다.
+/// 이 도우미가 들어 있는 Barobogi 앱(…/Barobogi.app/Contents/Helpers/SMTBrowserHost)을 활성화 없이 실행한다.
 func launchContainingApp() -> Bool {
     let executable = URL(fileURLWithPath: Bundle.main.executablePath ?? CommandLine.arguments[0]).resolvingSymlinksInPath()
     let appURL = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -68,7 +68,7 @@ guard BrowserBridge.allowedOrigins.contains(origin) else {
     fail("origin_not_allowed", "허용되지 않은 확장에서 호출했습니다.")
 }
 guard let teamID = BrowserCodeSigning.ownTeamID() else {
-    fail("unsigned_helper", "SMT 브라우저 도우미가 Developer ID로 서명되지 않았습니다. 서명된 SMT를 다시 설치하세요.")
+    fail("unsigned_helper", "Barobogi 브라우저 도우미가 Developer ID로 서명되지 않았습니다. 서명된 Barobogi를 다시 설치하세요.")
 }
 
 /// 앱 본체에 "리스너 상태를 다시 확인해 달라"는 신호만 보낸다(데이터 없음). 앱은 이 신호 내용을 그대로
@@ -79,7 +79,7 @@ func requestListenerRecovery() {
                                           CFNotificationName(recoveryNotificationName), nil, nil, true)
 }
 
-// 2) 엔진 연결 — 없으면 SMT를 백그라운드로 실행하고 잠시 기다린다.
+// 2) 엔진 연결 — 없으면 Barobogi를 백그라운드로 실행하고 잠시 기다린다.
 var engineFD = connectEngine()
 if engineFD == nil {
     if !NSRunningApplication.runningApplications(withBundleIdentifier: BrowserBridge.appBundleID).isEmpty {
@@ -96,11 +96,11 @@ if engineFD == nil {
             delay = min(delay * 2, 1_000_000)
         }
         if engineFD == nil {
-            fail("engine_unavailable", "SMT가 실행 중이지만 브라우저 연결을 열지 못했습니다. 잠시 후 다시 시도하거나 SMT를 다시 시작하세요.")
+            fail("engine_unavailable", "Barobogi가 실행 중이지만 브라우저 연결을 열지 못했습니다. 잠시 후 다시 시도하거나 Barobogi를 다시 시작하세요.")
         }
     } else {
         guard launchContainingApp() else {
-            fail("app_not_found", "SMT 앱을 실행하지 못했습니다. SMT를 응용 프로그램 폴더에 설치하고 '브라우저 번역…'에서 다시 준비하세요.")
+            fail("app_not_found", "Barobogi 앱을 실행하지 못했습니다. Barobogi를 응용 프로그램 폴더에 설치하고 '브라우저 번역…'에서 다시 준비하세요.")
         }
         let deadline = Date().addingTimeInterval(12)
         while engineFD == nil, Date() < deadline {
@@ -110,13 +110,13 @@ if engineFD == nil {
     }
 }
 guard let engine = engineFD else {
-    fail("app_not_responding", "SMT 브라우저 연결을 복구하지 못했습니다. SMT 설정의 브라우저 번역에서 새로고침을 누른 뒤 다시 시도하세요.")
+    fail("app_not_responding", "Barobogi 브라우저 연결을 복구하지 못했습니다. Barobogi 설정의 브라우저 번역에서 새로고침을 누른 뒤 다시 시도하세요.")
 }
 
-// 3) 엔진 신원 확인 — 같은 사용자 + 같은 팀으로 서명된 SMT 앱인지
+// 3) 엔진 신원 확인 — 같은 사용자 + 같은 팀으로 서명된 Barobogi 앱인지
 guard BrowserCodeSigning.peerIsTrusted(fd: engine, identifier: BrowserBridge.appBundleID, teamID: teamID) else {
     close(engine)
-    fail("untrusted_engine", "연결 상대가 서명된 SMT가 아닙니다. SMT를 다시 설치하세요.")
+    fail("untrusted_engine", "연결 상대가 서명된 Barobogi가 아닙니다. Barobogi를 다시 설치하세요.")
 }
 
 // 4) 중계 — 엔진 → 브라우저는 별도 스레드, 브라우저 → 엔진은 이 스레드.
@@ -125,7 +125,7 @@ let reader = Thread {
         do {
             send(try BrowserFrameIO.readFrame(engine, maxLength: BrowserBridge.maxOutgoingFrame))
         } catch {
-            send(BrowserBridge.errorFrame(code: "engine_disconnected", message: "SMT 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다."))
+            send(BrowserBridge.errorFrame(code: "engine_disconnected", message: "Barobogi 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다."))
             exit(0)
         }
     }
@@ -146,6 +146,6 @@ while true {
     do {
         try BrowserFrameIO.writeFrame(engine, frame)
     } catch {
-        fail("engine_disconnected", "SMT 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다.")
+        fail("engine_disconnected", "Barobogi 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다.")
     }
 }

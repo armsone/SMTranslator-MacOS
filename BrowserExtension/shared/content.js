@@ -1,4 +1,4 @@
-// SMT 웹 번역 — 페이지 내용 스크립트(Chrome·Whale·Safari 공용, 최상위 프레임만).
+// Barobogi 웹 번역 — 페이지 내용 스크립트(Chrome·Whale·Safari 공용, 최상위 프레임만).
 // - 글자는 DOM 텍스트 노드 값만 바꾼다(innerHTML을 바꾸지 않음). 원문은 메모리에 두고 '원문 보기'로 되돌린다.
 //   링크·버튼 등 요소는 그대로라 클릭·접근성이 유지된다.
 // - 이미지 속 글자는 보이는 이미지 영역만 캡처·OCR해 이미지 위에 클릭 통과(pointer-events: none) 덮개로 그린다.
@@ -15,7 +15,7 @@
 
   const api = globalThis.browser ?? globalThis.chrome;
   const MAX_UNITS = 600;
-  // 웹 번역 엔진(DeepL·Google·Papago)은 SMT가 조각마다 차례로 공식 페이지에 넣으므로 한 번에 적게 보낸다.
+  // 웹 번역 엔진(DeepL·Google·Papago)은 Barobogi가 조각마다 차례로 공식 페이지에 넣으므로 한 번에 적게 보낸다.
   const LOCAL_ENGINE = "apple";
   const MAX_EXTERNAL_UNITS = 120;
   const EXTERNAL_BATCH_TEXTS = 10;
@@ -56,7 +56,7 @@
     status: "대기",
     error: "",
     warning: "",
-    // SMT 엔진이 최근 응답에서 알려준, 지금 이 다듬기를 보낼 수 있는지(설정 켜짐 + 기기 내 모델 가능 + Mac 기본 번역).
+    // Barobogi 엔진이 최근 응답에서 알려준, 지금 이 다듬기를 보낼 수 있는지(설정 켜짐 + 기기 내 모델 가능 + Mac 기본 번역).
     aiRefine: false
   };
 

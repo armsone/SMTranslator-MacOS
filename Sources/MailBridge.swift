@@ -17,7 +17,7 @@ enum MailBridgeError: LocalizedError, Equatable {
         case .mailNotRunning:
             return "Mail 앱이 실행 중이 아닙니다. Mail을 열고 번역할 메시지를 선택한 뒤 다시 시도하세요."
         case .notAuthorized:
-            return "Mail 접근이 허용되지 않았습니다. 시스템 설정 › 개인정보 보호 및 보안 › 자동화에서 '스크린 메일 번역기'의 Mail 항목에 허용이 필요합니다, 또는 '.eml 파일 열기'를 사용하세요. (이 앱은 보안 설정을 변경하지 않습니다.)"
+            return "Mail 접근이 허용되지 않았습니다. 시스템 설정 › 개인정보 보호 및 보안 › 자동화에서 '바로보기'의 Mail 항목에 허용이 필요합니다, 또는 '.eml 파일 열기'를 사용하세요. (이 앱은 보안 설정을 변경하지 않습니다.)"
         case .noSelection:
             return "Mail에서 선택된 메시지가 없습니다. 메시지 목록에서 메시지 하나를 선택하세요."
         case .emptySource:
@@ -48,7 +48,7 @@ enum MailBridge {
     """
 
     /// com.apple.security.automation.apple-events 항목이 있어야 macOS가 이 확인을 처음 할 때
-    /// 권한 요청 창을 띄운다(그래야 자동화 목록에 '스크린 메일 번역기'가 나타난다). 이미 결정된 뒤에는
+    /// 권한 요청 창을 띄운다(그래야 자동화 목록에 '바로보기'가 나타난다). 이미 결정된 뒤에는
     /// 즉시 결과만 돌려주며, 이 호출이 권한을 임의로 바꾸거나 설정을 여는 일은 없다.
     private static func automationPermissionStatus() -> OSStatus {
         var target = AEAddressDesc()

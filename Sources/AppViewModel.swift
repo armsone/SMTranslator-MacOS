@@ -360,7 +360,7 @@ final class AppViewModel: ObservableObject {
                 return true
             }
         }
-        status = .error("화면 기록 권한이 필요합니다. 시스템 설정 > 개인정보 보호 및 보안 > 화면 및 시스템 오디오 기록에서 '스크린 메일 번역기'를 허용한 뒤, 필요하면 앱을 다시 실행하세요.")
+        status = .error("화면 기록 권한이 필요합니다. 시스템 설정 > 개인정보 보호 및 보안 > 화면 및 시스템 오디오 기록에서 '바로보기'를 허용한 뒤, 필요하면 앱을 다시 실행하세요.")
         return false
     }
 

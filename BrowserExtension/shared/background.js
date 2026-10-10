@@ -1,8 +1,8 @@
 "use strict";
-// SMT 웹 번역 — 백그라운드(Chrome·Whale 서비스 워커 / Safari 이벤트 페이지 공용).
-// - 페이지 글자·보이는 탭 캡처는 이 Mac의 SMT 엔진(Chrome·Whale: 네이티브 메시징 도우미, Safari: 확장 앱)으로만 보낸다.
+// Barobogi 웹 번역 — 백그라운드(Chrome·Whale 서비스 워커 / Safari 이벤트 페이지 공용).
+// - 페이지 글자·보이는 탭 캡처는 이 Mac의 Barobogi 엔진(Chrome·Whale: 네이티브 메시징 도우미, Safari: 확장 앱)으로만 보낸다.
 //   기본 번역 엔진은 Mac 기본 번역(기기 내)이다. Chrome·Whale에서 사용자가 웹 번역 엔진(DeepL·Google·Papago)을 따로 고르고
-//   그 엔진에 동의한 경우에만 SMT가 글자(이미지는 Mac에서 인식한 글자)를 그 서비스의 공식 웹페이지로 보낸다. Safari는 Mac 기본만.
+//   그 엔진에 동의한 경우에만 Barobogi가 글자(이미지는 Mac에서 인식한 글자)를 그 서비스의 공식 웹페이지로 보낸다. Safari는 Mac 기본만.
 // - 저장하는 값: 동의 여부, 번역 언어, 번역 엔진과 엔진별 동의, 이미지 번역 여부, 전역 자동 번역 켜짐 여부. 페이지 내용은 저장하지 않는다.
 // - 요청마다 ID를 붙여 탭별로 추적하고, 탭 이동·닫기·스크롤(이미지) 때 그 탭의 요청만 취소한다.
 // - 전역 자동 번역(automaticEnabled)은 번역 버튼을 누를 때만 켜진다(이전 sites 목록은 더는 옵트인 신호로 쓰지 않는다).
@@ -21,7 +21,7 @@ const ALL_URLS = "<all_urls>";
 const TAB_MESSAGE_TIMEOUT = 5000;
 const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16, glyphsPerItem: 128, glyphsTotal: 8192,
                  refineItems: 8, refineItemChars: 700, refineChars: 4000 };
-// 웹 번역 엔진은 SMT가 항목마다 차례로 공식 페이지에 넣으므로 요청을 작게 하고 오래 기다린다(페이지 확인을 사용자가 할 시간 포함).
+// 웹 번역 엔진은 Barobogi가 항목마다 차례로 공식 페이지에 넣으므로 요청을 작게 하고 오래 기다린다(페이지 확인을 사용자가 할 시간 포함).
 const EXTERNAL_LIMITS = { texts: 12, chars: 15000 };
 const TIMEOUT = { hello: 15000, text: 60000, ocr: 90000, external: 600000, refine: 20000 };
 const LOCAL_ENGINE = "apple";
@@ -130,15 +130,15 @@ async function autoStillAllowed(epoch, origin = null) {
 function describeNativeFailure(raw) {
   const text = String(raw || "");
   if (IS_SAFARI) {
-    return "SMT 확장 앱에 연결하지 못했습니다. SMT를 응용 프로그램 폴더에 설치해 한 번 실행하고 Safari 설정에서 확장을 켜 주세요.";
+    return "Barobogi 확장 앱에 연결하지 못했습니다. Barobogi를 응용 프로그램 폴더에 설치해 한 번 실행하고 Safari 설정에서 확장을 켜 주세요.";
   }
   if (/not found/i.test(text)) {
-    return "SMT 연결이 등록되지 않았습니다. SMT 메뉴 막대 › 브라우저 번역…에서 이 브라우저의 '설치 시작'을 누르세요.";
+    return "Barobogi 연결이 등록되지 않았습니다. Barobogi 메뉴 막대 › 브라우저 번역…에서 이 브라우저의 '설치 시작'을 누르세요.";
   }
   if (/forbidden/i.test(text)) {
-    return "이 확장은 SMT 연결 허용 목록에 없습니다. SMT의 '브라우저 번역…'에서 '설치 시작'을 다시 누른 뒤 확장 폴더를 다시 로드하세요.";
+    return "이 확장은 Barobogi 연결 허용 목록에 없습니다. Barobogi의 '브라우저 번역…'에서 '설치 시작'을 다시 누른 뒤 확장 폴더를 다시 로드하세요.";
   }
-  return "SMT 엔진과 연결이 끊겼습니다. SMT가 응용 프로그램 폴더에 있는지 확인하고 다시 시도하세요.";
+  return "Barobogi 엔진과 연결이 끊겼습니다. Barobogi가 응용 프로그램 폴더에 있는지 확인하고 다시 시도하세요.";
 }
 
 const native = {
@@ -206,7 +206,7 @@ const native = {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.cancel(id);
-        reject(codedError("timeout", "SMT 응답 시간이 지났습니다. 다시 시도하세요."));
+        reject(codedError("timeout", "Barobogi 응답 시간이 지났습니다. 다시 시도하세요."));
       }, timeout);
       this.pending.set(id, { resolve, reject, timer, tabId, kind });
       const failSend = (error) => {
@@ -267,7 +267,7 @@ const native = {
       enabled: response.enabled === true,
       engineTitle: typeof response.engineTitle === "string" ? response.engineTitle : "Mac 기본 번역",
       version: typeof response.version === "string" ? response.version : "",
-      // 구버전 SMT나 Safari 확장 앱은 웹 번역 엔진을 알리지 않는다.
+      // 구버전 Barobogi나 Safari 확장 앱은 웹 번역 엔진을 알리지 않는다.
       externalEngines: Array.isArray(response.externalEngines)
         ? response.externalEngines.filter((engine) => EXTERNAL_ENGINES.includes(engine))
         : [],
@@ -275,7 +275,7 @@ const native = {
     };
   },
 
-  /** 팝업 "언어팩" 버튼: SMT가 실제 다운로드 화면을 열게 한다. Safari처럼 이 확장이 직접 그 화면을 열 수 없을 때는
+  /** 팝업 "언어팩" 버튼: Barobogi가 실제 다운로드 화면을 열게 한다. Safari처럼 이 확장이 직접 그 화면을 열 수 없을 때는
    *  응답에 안내 문구(message)가 실려 온다(창을 바로 열었을 때는 없음). */
   async openLanguagePack() {
     const response = await this.request({ v: 1, type: "openLanguagePack", id: this.nextId("lp") }, { timeout: TIMEOUT.hello });
@@ -463,7 +463,7 @@ async function updateTabIcon(tabId) {
     try { await api.action.setBadgeText({ tabId, text: "" }); } catch { /* 무시 */ }
   }
   if (typeof api.action?.setTitle === "function") {
-    const title = info.running ? "SMT 웹 번역 — 번역 중…" : "SMT 웹 번역";
+    const title = info.running ? "Barobogi 웹 번역 — 번역 중…" : "Barobogi 웹 번역";
     try { await api.action.setTitle({ tabId, title }); } catch { /* 무시 */ }
   }
 }
@@ -499,7 +499,7 @@ async function captureVisible(tab) {
   try {
     dataUrl = await api.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 82 });
   } catch (error) {
-    throw codedError("capture_denied", "이미지 글자 번역에는 화면 캡처 권한이 필요합니다. 툴바의 SMT 아이콘에서 '번역'을 누르세요.");
+    throw codedError("capture_denied", "이미지 글자 번역에는 화면 캡처 권한이 필요합니다. 툴바의 Barobogi 아이콘에서 '번역'을 누르세요.");
   }
   // 캡처하는 사이 탭이 바뀌었거나 다른 페이지로 이동했으면 버린다.
   const after = await api.tabs.get(tab.id);
@@ -660,7 +660,7 @@ async function handleContent(message, sender) {
   }
   switch (message.cmd) {
     case "translate": {
-      if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
+      if (!settings.consent) throw codedError("consent_required", "툴바의 Barobogi 아이콘에서 먼저 동의해 주세요.");
       const engine = requestEngine(message, settings);
       if (!TARGETS.includes(message.target) || !validTexts(message.texts, engine)) throw codedError("bad_request", "잘못된 번역 요청입니다.");
       const response = await native.request(
@@ -670,13 +670,13 @@ async function handleContent(message, sender) {
       const texts = Array.isArray(response.texts) && response.texts.length === message.texts.length
         ? response.texts.map((t) => (typeof t === "string" ? t : null))
         : null;
-      if (!texts) throw codedError("bad_response", "SMT 응답 형식이 올바르지 않습니다.");
+      if (!texts) throw codedError("bad_response", "Barobogi 응답 형식이 올바르지 않습니다.");
       return { ok: true, texts, missing: Array.isArray(response.missing) ? response.missing.filter((m) => typeof m === "string") : [],
                langs: sanitizeLangs(response.langs, texts.length), warning: sanitizeWarning(response.warning),
                aiRefine: response.aiRefine === true };
     }
     case "capture": {
-      if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
+      if (!settings.consent) throw codedError("consent_required", "툴바의 Barobogi 아이콘에서 먼저 동의해 주세요.");
       const captureId = await captureVisible(tab);
       if (epoch !== control.epoch) {
         captures.delete(tab.id);
@@ -685,7 +685,7 @@ async function handleContent(message, sender) {
       return { ok: true, captureId };
     }
     case "ocr": {
-      if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
+      if (!settings.consent) throw codedError("consent_required", "툴바의 Barobogi 아이콘에서 먼저 동의해 주세요.");
       const viewport = message.viewport;
       const engine = requestEngine(message, settings);
       if (!TARGETS.includes(message.target) || !validRegions(message.regions) ||
@@ -704,7 +704,7 @@ async function handleContent(message, sender) {
                warning: sanitizeWarning(response.warning), aiRefine: response.aiRefine === true };
     }
     case "refine": {
-      if (!settings.consent) throw codedError("consent_required", "툴바의 SMT 아이콘에서 먼저 동의해 주세요.");
+      if (!settings.consent) throw codedError("consent_required", "툴바의 Barobogi 아이콘에서 먼저 동의해 주세요.");
       const engine = requestEngine(message, settings);
       if (engine !== LOCAL_ENGINE) throw codedError("bad_request", "다듬기는 Mac 기본 번역에서만 지원합니다.");
       if (!TARGETS.includes(message.target) || !validRefineItems(message.items)) {
@@ -883,8 +883,8 @@ async function handlePopup(message) {
       await reconcile();
       settings = await loadSettings();
       const grant = await hasGlobalGrant();
-      // 동의 전에는 SMT를 실행하거나 연결하지 않는다.
-      let engine = { ok: false, message: "동의하면 SMT에 연결합니다." };
+      // 동의 전에는 Barobogi를 실행하거나 연결하지 않는다.
+      let engine = { ok: false, message: "동의하면 Barobogi에 연결합니다." };
       if (settings.consent) {
         try {
           engine = { ok: true, ...(await native.hello()) };

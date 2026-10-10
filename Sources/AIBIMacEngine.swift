@@ -8,7 +8,7 @@ import WebKit
 // 제공사 레지스트리(aibi-providers.json)를 사용한다. 이미지 첨부 경로는 이 앱에서 쓰지 않으므로 옮기지 않았다.
 // 로그인·실행 웹 보기는 모두 WKWebsiteDataStore.default()를 공유한다(메일 서식 보기는 별도의 비영구 저장소).
 // 프롬프트·답변·URL·쿠키·원시 오류는 로그나 진단에 남기지 않는다.
-// SMTranslator(스크린 메일 번역기) 통합: 메일 어댑터를 그대로 옮기고 호스트 연결만 더했다 — 실행 주인(메일/화면)별 취소,
+// Barobogi(바로보기) 통합: 메일 어댑터를 그대로 옮기고 호스트 연결만 더했다 — 실행 주인(메일/화면)별 취소,
 // 화면 번역 창 머리글의 숨김 표면 선택, 화면 글자 항목 종류. 선택자·런타임·레지스트리는 바꾸지 않았다.
 
 enum AIProvider: String, CaseIterable, Identifiable {
@@ -832,7 +832,7 @@ final class AIBIRunner {
                 existing.removeFromSuperview()
                 existing.interactive = true
                 status?.isVisible = true
-                let resultWindow = AIBIBrowserWindow(title: "\(config.provider.title) — 스크린 메일 번역기 외부 AI", header: AIBITaskHeader(), webView: existing)
+                let resultWindow = AIBIBrowserWindow(title: "\(config.provider.title) — 바로보기 외부 AI", header: AIBITaskHeader(), webView: existing)
                 resultWindow.onUserClose = { [weak self] in self?.window = nil; self?.cancel() }
                 window = resultWindow
                 resultWindow.show()
@@ -893,7 +893,7 @@ final class AIBIRunner {
         let webView = makeWebView(interactive: true)
         self.webView = webView
         status?.isVisible = true
-        let window = AIBIBrowserWindow(title: "\(config.provider.title) — 스크린 메일 번역기 외부 AI",
+        let window = AIBIBrowserWindow(title: "\(config.provider.title) — 바로보기 외부 AI",
                                        header: AIBITaskHeader(), webView: webView)
         window.onUserClose = { [weak self] in
             // 사용자가 창을 닫으면 작업을 취소한다(이미 닫히는 창을 다시 닫지 않음).
@@ -1337,7 +1337,7 @@ final class AIBIAccounts {
         }
         .font(.callout)
         .padding(12)
-        let window = AIBIBrowserWindow(title: "\(provider.title) 로그인 — 스크린 메일 번역기", header: header, webView: webView)
+        let window = AIBIBrowserWindow(title: "\(provider.title) 로그인 — 바로보기", header: header, webView: webView)
         window.onUserClose = { [weak self] in
             guard let self, generation == self.loginGeneration else { return }
             self.loginGeneration += 1

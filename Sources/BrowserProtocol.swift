@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import Security
 
-// 브라우저 확장 ↔ SMT 연결의 공통 상수·프레임 입출력·서명 확인.
+// 브라우저 확장 ↔ Barobogi 연결의 공통 상수·프레임 입출력·서명 확인.
 // 앱 본체, Chrome/Whale 네이티브 메시징 도우미(SMTBrowserHost), Safari 확장(.appex)이 함께 컴파일한다.
 // 이 파일은 다른 앱 소스에 의존하지 않는다(도우미는 이 파일만 함께 빌드한다).
 

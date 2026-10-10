@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "SMT 웹 번역",
-  "short_name": "SMT 번역",
-  "description": "이 Mac의 SMTranslator로 웹 페이지 글자와 이미지 속 글자를 번역합니다. 기본은 Mac 기본 번역(기기 내)이며, 직접 고르고 동의한 경우에만 DeepL·Google 번역·Papago 웹으로 보냅니다.",
+  "name": "Barobogi 웹 번역",
+  "short_name": "Barobogi 번역",
+  "description": "이 Mac의 Barobogi로 웹 페이지 글자와 이미지 속 글자를 번역합니다. 기본은 Mac 기본 번역(기기 내)이며, 직접 고르고 동의한 경우에만 DeepL·Google 번역·Papago 웹으로 보냅니다.",
   "version": "__SMT_VERSION__",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx7Y4r7vAkgYfMq1ysFJeB0TWo5pO3lsN0AWKycVWotGP58Zan486kN+yaE5SpDsElt3bgxgTJhBszkVf1bASph4mNShCPVf8E+FVuXL8Ug56mp3BtYFBlQEHq7CgCPeFYrzYgfA+b4IaqOpmuJZY6wNiSsXcFfGCp6kwmFZ8PLpUPiXri0zS6Egsk3G/r77Eo+b0pbqsrzwyCybnMVMjQI3Ky5+u9j5N20aUL0E2aDNE/aBrF9ln90OhGABC56Ox1VpAX07PZJVLpMOm5o6jJuri9fdIpCzzlblectgQrYQ87ss0MDGXQqL4jjXYS1YOj36O+jAtbhoYypaKZrNn6QIDAQAB",
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "SMT 웹 번역",
+    "default_title": "Barobogi 웹 번역",
     "default_popup": "popup.html",
     "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" }
   },

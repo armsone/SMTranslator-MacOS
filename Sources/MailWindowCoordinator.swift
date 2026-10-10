@@ -68,7 +68,7 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(store: settingsSection))
             let window = NSWindow(contentViewController: hosting)
-            window.title = "스크린 메일 번역기 설정"
+            window.title = "바로보기 설정"
             // 메일 결과 창과 구분되는 설정 창 식별자
             window.identifier = NSUserInterfaceItemIdentifier("settings")
             window.styleMask = [.titled, .closable, .miniaturizable]
