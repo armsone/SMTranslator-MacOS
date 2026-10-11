@@ -174,7 +174,14 @@ final class BrowserBridgeServer: @unchecked Sendable {
                 break
             }
             Task.detached(priority: .userInitiated) {
-                let response = await engine.handle(frame, scope: scope)
+                // 중간 진행 프레임(같은 요청 id, 단계·개수만)도 최종 응답과 같은 직렬 게이트로 쓴다. 진행은 handle이
+                // 끝나기 전에만 큐에 들어가므로 FIFO상 항상 최종 응답보다 앞서고, 닫힌 뒤에는 버려진다.
+                let response = await engine.handle(frame, scope: scope, emit: { progress in
+                    writer.async {
+                        guard !gate.closed else { return }
+                        try? BrowserFrameIO.writeFrame(fd, progress)
+                    }
+                })
                 writer.async {
                     guard !gate.closed else { return }
                     try? BrowserFrameIO.writeFrame(fd, response)

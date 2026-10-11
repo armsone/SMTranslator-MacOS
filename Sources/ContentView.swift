@@ -772,7 +772,8 @@ private struct ImageBlockView: View {
                                 .foregroundStyle(Color(hex: region.foregroundHex))
                                 .padding(.horizontal, 2)
                                 .frame(width: rect.width, height: rect.height)
-                                .background(Color(hex: region.backgroundHex).opacity(0.88))
+                                // 반투명이면 원문 글자가 비친다. 인식한 배경색으로 불투명하게 가린다.
+                                .background(Color(hex: region.backgroundHex))
                                 .cornerRadius(2)
                                 .position(x: rect.midX, y: rect.midY)
                         }

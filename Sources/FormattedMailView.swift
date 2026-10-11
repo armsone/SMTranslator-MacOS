@@ -909,7 +909,8 @@ enum MailWebScript {
           const ov = create('mt-ov', translated);
           place(ov, bx, by, bw, bh);
           const bg = (r[7] && /^#[0-9a-fA-F]{6}$/.test(r[7])) ? r[7] : '#ffffff';
-          ov.style.background = bg + 'e3';
+          // 반투명이면 원문 글자가 비친다. 인식한 배경색으로 불투명하게 가린다(원본 그림 복원이 아닌 단색 가림).
+          ov.style.background = bg;
           ov.style.color = (r[8] && /^#[0-9a-fA-F]{6}$/.test(r[8])) ? r[8] : '#000000';
           ov.style.fontSize = Math.max(8, Math.min(bh * 0.62, (bw / Math.max(translated.length, 1)) * 1.7)) + 'px';
           layer.append(ov);

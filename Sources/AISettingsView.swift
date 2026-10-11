@@ -7,6 +7,8 @@ struct AISettingsView: View {
     @State private var accounts = AIBIAccounts.shared
     @State private var webConsents = WebTranslatorConsentStore.shared
     @State private var webConsentRequest: WebTranslator?
+    /// 현재 페이지 1회성 번역(Google·DeepL) 동의를 묻는 중인 서비스. 서비스마다 따로 묻고 따로 기억한다.
+    @State private var pageConsentRequest: WebTranslator?
     @ObservedObject private var diagnostics = AIBIDiagnosticsStore.shared
     @State private var dockVisibility = DockVisibilityStore.shared
     @State private var mailButtonEnabled = MailToolbarButton.shared.isEnabled
@@ -56,6 +58,26 @@ struct AISettingsView: View {
                 Text("시작")
             } footer: {
                 Text(loginStatus)
+            }
+
+            Section {
+                ForEach(WebTranslatorConsentStore.pageTranslators) { translator in
+                    HStack {
+                        Text(translator.title).frame(width: 90, alignment: .leading)
+                        Text(webConsents.hasConsent(translator) ? "동의함" : "아직 동의하지 않음")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if webConsents.hasConsent(translator) {
+                            Button("동의 철회") { webConsents.revoke(translator) }
+                        } else {
+                            Button("동의…") { pageConsentRequest = translator }
+                        }
+                    }
+                }
+            } header: {
+                Text("현재 페이지 외부 번역 전송 동의")
+            } footer: {
+                Text("브라우저 확장의 '구글'·'DeepL' 버튼을 쓸 때만 필요하며, 서비스마다 따로 동의하고 철회합니다. 동의하면 그 버튼을 누른 탭의 현재 페이지 일반 글자와 이미지에서 이 Mac이 인식한 글자만 고른 서비스의 공식 웹페이지로 보냅니다. 스크린샷·이미지·페이지 HTML·주소는 이 Mac에만 남습니다. 동의해도 전역 자동 번역은 바뀌지 않으며, 다른 외부 AI에는 영향이 없습니다.")
             }
 
             if TranslationBackend.externalOptionsVisible {
@@ -170,6 +192,14 @@ struct AISettingsView: View {
             Button("취소", role: .cancel) {}
         } message: { translator in
             Text(WebTranslatorConsentStore.message(for: translator))
+        }
+        .alert(pageConsentRequest.map { "\($0 == .deepl ? "DeepL로" : "Google 번역으로") 현재 페이지를 전송할까요?" } ?? "",
+               isPresented: Binding(get: { pageConsentRequest != nil }, set: { if !$0 { pageConsentRequest = nil } }),
+               presenting: pageConsentRequest) { translator in
+            Button("동의") { webConsents.grant(translator) }
+            Button("취소", role: .cancel) {}
+        } message: { translator in
+            Text(WebTranslatorConsentStore.pageMessage(for: translator))
         }
         .onAppear {
             mailButtonEnabled = MailToolbarButton.shared.isEnabled

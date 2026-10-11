@@ -92,10 +92,9 @@ echo "==> 브라우저 확장 파일 준비 (버전 $APP_VERSION)"
 ICON_DIR="$BUILD_DIR/browser-icons"
 rm -rf "$ICON_DIR"
 mkdir -p "$ICON_DIR"
-# 앱 아이콘 원본은 Finder/Dock용 여백(약 9%)이 포함돼 있어 그대로 축소하면 브라우저 툴바에서 다른 확장
-# 아이콘보다 작아 보인다. 여백을 크롭해 같은 그림을 꽉 채워 생성한다(디자인 변경 없음, 비율만 조정).
+# 툴바용 그림은 A·가를 크게 하고 여백을 줄인 별도 원본을 쓴다. Dock 아이콘 원본은 유지한다.
 BROWSER_ICON_SOURCE="$ICON_DIR/_source-cropped.png"
-sips -s format png -c 1060 1060 "$ROOT_DIR/Resources/AppIcon-source.png" --out "$BROWSER_ICON_SOURCE" >/dev/null
+cp "$ROOT_DIR/Resources/BrowserToolbarIcon-source.png" "$BROWSER_ICON_SOURCE"
 for size in 16 32 48 128; do
   sips -z "$size" "$size" "$BROWSER_ICON_SOURCE" --out "$ICON_DIR/icon$size.png" >/dev/null
 done
@@ -103,10 +102,13 @@ rm -f "$BROWSER_ICON_SOURCE"
 # stage_extension <대상 폴더> <manifest 원본>
 stage_extension() {
   local dest="$1" manifest="$2"
-  mkdir -p "$dest/icons" "$dest/fonts"
+  mkdir -p "$dest/icons" "$dest/fonts" "$dest/provider-logos"
   cp "$BROWSER_DIR/shared/background.js" "$BROWSER_DIR/shared/content.js" \
      "$BROWSER_DIR/shared/popup.html" "$BROWSER_DIR/shared/popup.js" "$BROWSER_DIR/shared/popup.css" "$dest/"
   cp "$ICON_DIR"/icon*.png "$dest/icons/"
+  # 팝업의 구글·DeepL 버튼 공식 로고(번들 안 로컬 파일, 네트워크로 받지 않음).
+  cp "$BROWSER_DIR/shared/provider-logos/google-translate.png" "$BROWSER_DIR/shared/provider-logos/deepl-blue.svg" \
+     "$BROWSER_DIR/shared/provider-logos/deepl-white.svg" "$BROWSER_DIR/shared/provider-logos/deepl-symbol-"*.svg "$dest/provider-logos/"
   # 고딕/명조/손글씨 글꼴(패키지 번들, 온라인 Google Fonts 의존 안 함). 라이선스(OFL)도 함께 접근 가능하게 둔다.
   cp "$ROOT_DIR/Resources/Fonts"/*.ttf "$dest/fonts/"
   cp "$ROOT_DIR/Resources/Fonts"/*-OFL.txt "$ROOT_DIR/Resources/Fonts"/*-LICENSE.txt "$dest/fonts/"

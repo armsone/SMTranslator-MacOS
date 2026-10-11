@@ -1,5 +1,5 @@
 :root { color-scheme: light dark; }
-body { width: 300px; margin: 0; padding: 12px; font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+body { width: 270px; margin: 0; padding: 12px; font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
 header { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 header strong { flex: 1; }
 .pill { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: rgba(127,127,127,.18); }
@@ -14,11 +14,19 @@ section p { margin: 0 0 10px; line-height: 1.45; }
 .buttons { display: flex; gap: 6px; margin-bottom: 10px; }
 .buttons button { flex: 1; }
 button { padding: 5px 8px; font: inherit; border-radius: 6px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
-button.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+button.primary, button.active { background: #0a84ff; border-color: #0a84ff; color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
 .auto { margin: 0 0 10px; font-size: 12px; color: GrayText; }
 .status { margin: 10px 0 0; color: GrayText; min-height: 1em; display: flex; align-items: center; gap: 6px; }
+.statusText { flex: 1; min-width: 0; }
+/* 경과 시간: 단계 줄 오른쪽 끝, 숫자 폭이 바뀌어도 흔들리지 않게 */
+.elapsed { flex: none; font-variant-numeric: tabular-nums; }
+.summary { margin: 4px 0 0; font-size: 12px; color: GrayText; }
+.details { margin: 6px 0 0; font-size: 12px; color: GrayText; }
+.details[hidden] { display: none; }
+.details summary { cursor: pointer; }
+.details p { margin: 3px 0 0; line-height: 1.4; }
 .spinner {
   width: 11px;
   height: 11px;
@@ -46,10 +54,17 @@ button:disabled { opacity: .5; cursor: default; }
   background: rgba(127,127,127,.16);
 }
 .switchSide {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 1;
-  padding: 12px 8px;
-  font-size: 15px;
+  min-width: 0;
+  padding: 12px 4px;
+  font-size: 12px;
   font-weight: 600;
+  gap: 3px;
+  white-space: nowrap;
   border: none;
   border-radius: 9px;
   background: transparent;
@@ -57,9 +72,39 @@ button:disabled { opacity: .5; cursor: default; }
   cursor: pointer;
 }
 .switchSide:disabled { opacity: .5; cursor: default; }
+/* 버튼 안 진행 원: 글자·로고를 밀지 않도록 오른쪽 위 모서리에 고정(버튼 안쪽, 작게). 글자·로고는 버튼 한가운데 그대로 */
+.switchSide .spinner {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border-width: 1.5px;
+}
+.switchSide.active .spinner { border-color: rgba(255,255,255,.45); border-top-color: #fff; }
+/* 서비스 공식 로고(번들 안 로컬 파일). DeepL은 정사각형 심볼, 밝은 화면=파란 로고·어두운 화면=흰 로고 */
+.providerSide { padding: 12px 4px; }
+.providerLogo { display: block; flex: none; }
+.googleLogo { width: 18px; height: 18px; }
+.deeplLogo { width: 18px; height: 18px; }
+.originalLogo { flex: none; }
+.logoDark { display: none; }
+@media (prefers-color-scheme: dark) {
+  .logoLight { display: none; }
+  .logoDark { display: block; }
+}
 .switchSide.active {
   background: #0a84ff;
   color: #fff;
   box-shadow: 0 1px 3px rgba(0,0,0,.25);
 }
+/* 1회성 구글·DeepL로 번역 중·표시 중인 서비스: 보기 선택(파랑 채움)은 '번역'에 두고 같은 파랑의 얇은 테두리만 */
+.switchSide.engineOn { box-shadow: inset 0 0 0 1.5px #0a84ff; }
 .langPackButton { margin-top: 4px; font-size: 13px; }
+@media (prefers-reduced-motion: reduce) {
+  .switchSide.active .spinner { border-color: transparent; background: #fff; }
+}
+
+.groupHeading { display: flex; align-items: center; justify-content: space-between; }
+.groupHeading .langPackButton { margin: 0; flex: none; }

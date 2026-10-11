@@ -12,6 +12,8 @@ struct DocumentTextParagraph {
     /// 공백이 아닌 글자 하나당 잉크 영역 근사치. box와 같은 Vision 원본 정규화 좌표(원점 좌하단)이며
     /// 호출자가 변환한다. boundingRegion(for:)로 범위를 못 가져온 글자는 빠져 있을 수 있다.
     let glyphBoxes: [CGRect]
+    /// glyphBoxes와 같은 순서·개수의 인식 글자(원본 글자 모양 대조용)
+    let glyphTexts: [String]
 }
 
 /// 공용 문서 텍스트 인식 헬퍼. 세로쓰기 일본어처럼 줄 순서가 중요한 콘텐츠를 위해
@@ -59,25 +61,31 @@ enum DocumentTextRecognizer {
             guard !text.isEmpty else { return nil }
             let confidences = paragraph.lines.map(\.confidence)
             let averageConfidence = confidences.isEmpty ? 1 : confidences.reduce(0, +) / Float(confidences.count)
-            guard averageConfidence >= 0.3 else { return nil }
+            // 세로 만화 본문은 정확하게 읽힌 문단도 0.13~0.24로 보고된다.
+            // 0.3으로 버리면 줄 인식 폴백이 문장·이름을 쪼개고 오역한다.
+            // 빈 문단/영역은 계속 제외하고, 낮은 신뢰도라도 문서의 줄 순서는 보존한다.
+            guard averageConfidence >= 0.1 else { return nil }
             let box = paragraph.boundingRegion.normalizedPath.boundingBoxOfPath
             guard !box.isEmpty else { return nil }
-            let glyphBoxes = glyphBoxes(in: paragraph.transcript) { try? paragraph.boundingRegion(for: $0) }
-            return DocumentTextParagraph(text: text, box: box, glyphBoxes: glyphBoxes)
+            let glyphs = glyphBoxes(in: paragraph.transcript) { try? paragraph.boundingRegion(for: $0) }
+            if averageConfidence < 0.3 {
+                guard glyphs.contains(where: { $0.0.contains(where: { $0.isLetter || $0.isNumber }) }) else { return nil }
+            }
+            return DocumentTextParagraph(text: text, box: box, glyphBoxes: glyphs.map(\.1), glyphTexts: glyphs.map(\.0))
         }
     }
 
     /// transcript의 공백이 아닌 글자마다 boundingRegion(for:)로 잉크 영역을 구한다. 범위를 못 구한 글자는
     /// 건너뛸 뿐(문단 전체를 지우는 폴백은 쓰지 않음) 결과 개수는 ImageTextRecognizer.maxGlyphsPerItem개로 제한한다.
-    private static func glyphBoxes(in transcript: String, region: (Range<String.Index>) -> NormalizedRegion?) -> [CGRect] {
-        var boxes: [CGRect] = []
+    private static func glyphBoxes(in transcript: String, region: (Range<String.Index>) -> NormalizedRegion?) -> [(String, CGRect)] {
+        var boxes: [(String, CGRect)] = []
         var index = transcript.startIndex
         while index < transcript.endIndex, boxes.count < ImageTextRecognizer.maxGlyphsPerItem {
             let next = transcript.index(after: index)
             if !transcript[index].isWhitespace,
                let box = region(index..<next)?.normalizedPath.boundingBoxOfPath,
                let clamped = ImageTextRecognizer.clampedUnitBox(box) {
-                boxes.append(clamped)
+                boxes.append((String(transcript[index]), clamped))
             }
             index = next
         }

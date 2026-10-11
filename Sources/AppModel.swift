@@ -682,7 +682,9 @@ final class AppModel {
             try await session.prepareTranslation()
         } catch {
             guard generation == translationGeneration, !Self.isCancellation(error) else { return }
-            failGroup(key, message: Self.describe(error))
+            let message = await Self.translationErrorMessage(error, source: key, target: targetLanguageID)
+            guard generation == translationGeneration, !Task.isCancelled else { return }
+            failGroup(key, message: message)
             return
         }
         translationPhase = .translating
@@ -771,7 +773,9 @@ final class AppModel {
                     await translateBatch([id], session: session, generation: generation)
                 }
             } else if let id = ids.first {
-                segmentStates[id] = .failed(Self.describe(error))
+                let message = await Self.translationErrorMessage(error, source: segments[id]?.groupKey ?? "auto", target: targetLanguageID)
+                guard generation == translationGeneration, !Task.isCancelled else { return }
+                segmentStates[id] = .failed(message)
             }
         }
     }
@@ -1131,6 +1135,25 @@ final class AppModel {
         return false
     }
 
+    private static func translationErrorMessage(_ error: Error, source: String, target: String) async -> String {
+        if #available(macOS 26.0, *), TranslationError.notInstalled ~= error {
+            guard source != "auto" else {
+                return "번역 준비에 실패했습니다. 원본 언어를 선택한 뒤 다시 번역하세요."
+            }
+            let status = await LanguageAvailability().status(from: Locale.Language(identifier: source),
+                                                             to: Locale.Language(identifier: target))
+            switch status {
+            case .installed:
+                return "언어팩은 설치되어 있지만 번역 서비스가 응답하지 않습니다. 다시 번역하세요."
+            case .unsupported:
+                return "이 언어 조합은 Apple 번역에서 지원하지 않습니다."
+            case .supported: break
+            @unknown default: return "언어팩 상태를 확인하지 못했습니다. 다시 번역하세요."
+            }
+        }
+        return describe(error)
+    }
+
     static func describe(_ error: Error) -> String {
         if TranslationError.unsupportedLanguagePairing ~= error {
             return "이 언어 조합은 Apple 번역에서 지원하지 않습니다."
@@ -1382,8 +1405,9 @@ struct TextChunk {
 enum TextChunker {
     static let limit = 900
 
-    static func chunks(_ text: String) -> [TextChunk] {
-        guard text.count > limit else { return [TextChunk(text: text, separator: "")] }
+    static func chunks(_ text: String, limit: Int = TextChunker.limit, measuringUTF16: Bool = false) -> [TextChunk] {
+        let length: (String) -> Int = { measuringUTF16 ? $0.utf16.count : $0.count }
+        guard length(text) > limit else { return [TextChunk(text: text, separator: "")] }
         let tokenizer = NLTokenizer(unit: .sentence)
         tokenizer.string = text
         var sentences: [String] = []
@@ -1404,26 +1428,34 @@ enum TextChunker {
             current = ""
         }
         for sentence in sentences {
-            if sentence.count > limit {
+            if length(sentence) > limit {
                 emit()
-                for piece in hardSplit(sentence) {
+                for piece in hardSplit(sentence, limit: limit, measuringUTF16: measuringUTF16) {
                     current = piece
                     emit()
                 }
                 continue
             }
-            if current.count + sentence.count > limit { emit() }
+            if length(current) + length(sentence) > limit { emit() }
             current += sentence
         }
         emit()
         return result.isEmpty ? [TextChunk(text: text, separator: "")] : result
     }
 
-    private static func hardSplit(_ text: String) -> [String] {
+    private static func hardSplit(_ text: String, limit: Int, measuringUTF16: Bool) -> [String] {
         var pieces: [String] = []
         var rest = Substring(text)
-        while rest.count > limit {
-            let window = rest.prefix(limit)
+        while (measuringUTF16 ? rest.utf16.count : rest.count) > limit {
+            var remaining = limit
+            let window = measuringUTF16 ? rest.prefix(while: { character in
+                let units = String(character).utf16.count
+                guard units <= remaining else { return false }
+                remaining -= units
+                return true
+            }) : rest.prefix(limit)
+            // 한 글자 자체가 한도보다 큰 드문 결합 문자도 쪼개 훼손하거나 무한 반복하지 않는다.
+            guard !window.isEmpty else { pieces.append(String(rest)); return pieces }
             let cut = window.lastIndex(where: { $0 == " " || $0 == "\n" }) ?? window.endIndex
             let end = cut == rest.startIndex ? window.endIndex : cut
             pieces.append(String(rest[..<end]) + " ")

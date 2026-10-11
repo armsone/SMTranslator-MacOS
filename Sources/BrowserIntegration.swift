@@ -146,9 +146,12 @@ final class BrowserIntegration: ObservableObject {
                 translator = BrowserHostedTranslator()
             }
             // 확장에서 웹 번역 엔진을 고른 요청만 앱의 웹 번역 실행기로 넘긴다(앱 쪽 제공사별 동의 필요).
+            // 이 다리는 externalOptionsVisible(메일·화면 번역의 외부 방식 선택 UI)과 별개다 — 확장의 '이 페이지를
+            // Google로' 같은 명시적 1회성 요청은 그 UI 없이도 여기로 들어오며, 엔진별 동의는 여전히 WebTranslatorBrowserBridge가
+            // 확인한다(WebTranslatorConsentStore). 확장이 보통 때 고를 수 있는 엔진은 background.js의 EXTERNAL_ENGINES가 가린다.
             // Apple Intelligence 다듬기는 이 앱 본체 엔진(Chrome·Whale)에서만 연결한다. Safari 확장은 앱 설정을
             // 읽을 수 없어 별도 엔진 인스턴스(refiner 없음)를 쓰며, 여기서 손대지 않는다.
-            let engine = BrowserEngine(translator: translator, external: TranslationBackend.externalOptionsVisible ? WebTranslatorBrowserBridge() : nil,
+            let engine = BrowserEngine(translator: translator, external: WebTranslatorBrowserBridge(),
                                        refiner: AppleBrowserRefiner(),
                                        isEnabled: { true },
                                        openLanguagePack: {

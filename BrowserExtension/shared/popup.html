@@ -20,13 +20,15 @@
 
   <section id="main" hidden>
     <div class="switch" id="viewSwitch" role="group" aria-label="번역 보기 전환">
-      <button id="translate" class="switchSide">번역 보기</button>
-      <button id="original" class="switchSide">원문 보기</button>
+      <button id="googlePage" class="switchSide providerSide" aria-label="구글" title="현재 페이지의 글자와 이미지에서 인식한 글자를 Google로 번역합니다. 이미지 자체는 이 Mac에서 처리합니다."><span id="googleSpinner" class="spinner" hidden aria-hidden="true"></span><img class="providerLogo googleLogo" src="provider-logos/google-translate.png" alt="" width="18" height="18"><span>구글</span></button>
+      <button id="deeplPage" class="switchSide providerSide" aria-label="딥플" title="현재 페이지의 글자와 이미지에서 인식한 글자를 DeepL로 번역합니다. 이미지 자체는 이 Mac에서 처리합니다."><span id="deeplSpinner" class="spinner" hidden aria-hidden="true"></span><img class="providerLogo deeplLogo logoLight" src="provider-logos/deepl-symbol-blue.svg" alt=""><img class="providerLogo deeplLogo logoDark" src="provider-logos/deepl-symbol-white.svg" alt=""><span>딥플</span></button>
+      <button id="translate" class="switchSide"><span id="translateSpinner" class="spinner" hidden aria-hidden="true"></span><img class="providerLogo" src="icons/icon32.png" alt="" width="18" height="18"><span>번역</span></button>
+      <button id="original" class="switchSide"><svg class="originalLogo" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg><span>원문</span></button>
     </div>
     <p id="autoStatus" class="auto"></p>
 
     <div class="group">
-      <h2 class="groupTitle">언어</h2>
+      <div class="groupHeading"><h2 class="groupTitle">언어</h2><button id="langPack" class="linkButton langPackButton">언어팩</button></div>
       <label class="row">번역 언어
         <select id="target">
           <option value="ko">한국어</option>
@@ -48,13 +50,17 @@
           <span class="help" title="자동은 원본 글자 모양으로 추정하며, 애매하면 고딕을 씁니다. 이미지 속 글자 번역은 항상 켜져 있습니다.">?</span>
         </span>
       </label>
-      <button id="langPack" class="linkButton langPackButton">언어팩</button>
     </div>
+
   </section>
 
   <footer>
-    <p id="status" class="status"><span id="spinner" class="spinner" hidden aria-hidden="true"></span><span id="statusText"></span></p>
-    <p id="langStats" class="langStats" title="텍스트 조각·OCR 문단 기준" hidden></p>
+    <p id="status" class="status"><span id="spinner" class="spinner" hidden aria-hidden="true"></span><span id="statusText" class="statusText"></span><span id="elapsed" class="elapsed"></span></p>
+    <p id="summary" class="summary" hidden></p>
+    <details id="details" class="details" hidden>
+      <summary>처리 상세</summary>
+      <div id="detailBody"></div>
+    </details>
     <p id="error" class="error" hidden></p>
   </footer>
   <script src="popup.js"></script>
